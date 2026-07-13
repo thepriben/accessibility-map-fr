@@ -1,12 +1,13 @@
 import type { StyleSpecification } from 'maplibre-gl';
-import { BASEMAP_TILES, MAP_ATTRIBUTION } from '../config';
+import { BASEMAP_TILES, MAP_ATTRIBUTION, asset } from '../config';
 
-/** Style MapLibre minimal : fond raster CARTO Voyager (sobre). */
+/** Style MapLibre minimal : fond raster Plan IGN (sobre, francais). */
 export function baseStyle(): StyleSpecification {
   return {
     version: 8,
-    // Serveur de glyphes fiable (le demo maplibre n'a pas "Open Sans Regular").
-    glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
+    // Glyphes AUTO-HEBERGES (meme origine) : fiables et sans dependance externe.
+    // (fonts.openmaptiles.org renvoyait du HTML -> tuiles illisibles "type 4".)
+    glyphs: asset('fonts/{fontstack}/{range}.pbf'),
     sources: {
       basemap: {
         type: 'raster',

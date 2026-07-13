@@ -22,15 +22,18 @@ export const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
  * par defaut). On cite le fond de carte et les donnees, comme l'exige la licence.
  */
 export const MAP_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &middot; ' +
-  'fond <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a> &middot; ' +
+  '&copy; <a href="https://www.ign.fr/" target="_blank" rel="noopener">IGN</a> / ' +
+  '<a href="https://geoservices.ign.fr/" target="_blank" rel="noopener">Géoplateforme</a> &middot; ' +
   'données <a href="https://acceslibre.beta.gouv.fr/" target="_blank" rel="noopener">Acceslibre</a>';
 
-/** Tuiles raster du fond de carte (CARTO Positron, sobre, sans cle). */
+/**
+ * Fond de carte sobre et en francais : Plan IGN v2 (Geoplateforme, ouvert, sans
+ * cle). Cartographie neutre a toponymie francaise, ideale pour la lisibilite.
+ */
 export const BASEMAP_TILES = [
-  'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-  'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
-  'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+  'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0' +
+    '&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM' +
+    '&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
 ];
 
 /** Vue initiale (France metropolitaine). */
