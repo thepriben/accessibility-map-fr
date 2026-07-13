@@ -17,7 +17,12 @@ export interface PopupHandlers {
 }
 
 /** Affiche un popup carto avec les infos Acceslibre du lieu + actions (3D / fiche). */
-export function showPlacePopup(map: MlMap, place: Place, handlers: PopupHandlers): void {
+export function showPlacePopup(
+  map: MlMap,
+  place: Place,
+  handlers: PopupHandlers,
+  note?: string
+): void {
   const p = place.properties;
   // Precharge le voisinage : l'entree en 3D depuis ce popup sera quasi instantanee.
   prefetchNeighborhood(place.lng, place.lat);
@@ -39,6 +44,7 @@ export function showPlacePopup(map: MlMap, place: Place, handlers: PopupHandlers
   const el = document.createElement('div');
   el.className = 'ppop';
   el.innerHTML = `
+    ${note ? `<p class="ppop-note">${esc(note)}</p>` : ''}
     <h3 class="ppop-title">${esc(p.nom)}</h3>
     ${sub ? `<p class="ppop-sub">${esc(sub)}</p>` : ''}
     <div class="ppop-badges">${badges}</div>

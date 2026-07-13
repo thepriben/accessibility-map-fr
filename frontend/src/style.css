@@ -280,6 +280,11 @@ a { color: var(--focus); }
 
 /* Popup carto (infos Acceslibre + actions) */
 .ppop { font-size: 0.85rem; line-height: 1.35; }
+.ppop-note {
+  margin: 0 0 6px; padding: 3px 8px; border-radius: 6px;
+  background: var(--soft); color: var(--muted);
+  font-size: 0.74rem; font-weight: 600;
+}
 .ppop-title { margin: 0 0 2px; font-size: 0.98rem; }
 .ppop-sub { margin: 0 0 8px; color: var(--muted); }
 .ppop-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }

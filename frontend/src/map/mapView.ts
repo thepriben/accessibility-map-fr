@@ -126,7 +126,21 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
       const zoom = await src.getClusterExpansionZoom(clusterId);
       map!.easeTo({ center: coords, zoom });
     } else {
-      map!.easeTo({ center: coords, zoom: Math.min((map!.getZoom() || 5) + 2.5, 18) });
+      // Mode pmtiles : les grappes sont pre-agregees (zoom max des tuiles = 16).
+      // Au zoom rue, une petite grappe ne se separe plus par un simple zoom.
+      // tippecanoe conserve les attributs d'un lieu representatif sur la grappe :
+      // on ouvre alors un popup exploitable (lieu + "N lieux ici" + 3D) plutot
+      // que de rester bloque sur un rond "2".
+      const count = Number(feat.properties?.point_count ?? 0);
+      const z = map!.getZoom() || 5;
+      const props = feat.properties as unknown as PlaceProperties;
+      if (z >= 15 && count > 0 && count <= 12 && props?.nom) {
+        const place: Place = { properties: props, lng: coords[0], lat: coords[1] };
+        const note = `${count} lieux à cet endroit · exemple ci-dessous`;
+        showPlacePopup(map!, place, handlers, note);
+      } else {
+        map!.easeTo({ center: coords, zoom: Math.min(z + 2.5, 18) });
+      }
     }
   });
 
