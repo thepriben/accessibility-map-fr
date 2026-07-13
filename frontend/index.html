@@ -51,6 +51,14 @@
 
     <div id="status" class="status" role="status" aria-live="polite"></div>
 
+    <!-- Indicateur de chargement (spinner) pour les operations longues -->
+    <div id="loader" class="loader" hidden>
+      <div class="loader-box" role="status" aria-live="polite">
+        <span class="loader-spinner" aria-hidden="true"></span>
+        <span id="loader-msg" class="loader-msg">Chargement…</span>
+      </div>
+    </div>
+
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

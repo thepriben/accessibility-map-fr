@@ -318,6 +318,33 @@ a { color: var(--focus); }
 }
 .status:empty { display: none; }
 
+/* Indicateur de chargement (spinner) */
+.loader {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(2px);
+}
+.loader[hidden] { display: none; }
+.loader-box {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 20px; box-shadow: var(--shadow);
+  font-size: 0.95rem; max-width: 80vw;
+}
+.loader-spinner {
+  width: 22px; height: 22px; flex: none;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: loader-spin 0.8s linear infinite;
+}
+@keyframes loader-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .loader-spinner { animation-duration: 2s; }
+}
+
 /* Responsive : filtres repliables sous le header */
 @media (max-width: 760px) {
   #main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }

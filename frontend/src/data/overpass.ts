@@ -1,5 +1,37 @@
 import { OVERPASS_API } from '../config';
 
+// Miroirs Overpass : le principal est souvent sature/limite. On bascule sur un
+// miroir en cas d'echec ou de timeout pour fiabiliser l'entree en 3D.
+const OVERPASS_ENDPOINTS = [
+  OVERPASS_API,
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+];
+
+/** POST Overpass avec timeout, en essayant chaque miroir a tour de role. */
+async function overpassFetch(query: string, timeoutMs = 20000): Promise<any> {
+  let lastErr: unknown = null;
+  for (const url of OVERPASS_ENDPOINTS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        body: 'data=' + encodeURIComponent(query),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        signal: ctrl.signal,
+      });
+      if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      lastErr = err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('Overpass indisponible');
+}
+
 export interface OsmBuilding {
   id: string;
   ring: [number, number][]; // anneau exterieur [lng,lat]
@@ -140,13 +172,7 @@ async function fetchNeighborhoodRaw(
     );
     out geom tags center;`;
 
-  const res = await fetch(OVERPASS_API, {
-    method: 'POST',
-    body: 'data=' + encodeURIComponent(query),
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-  });
-  if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
-  const data = await res.json();
+  const data = await overpassFetch(query);
 
   const out: NeighborhoodData = {
     center: { lng, lat },

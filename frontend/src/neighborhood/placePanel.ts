@@ -4,7 +4,19 @@ import { fetchNearbyPhotos } from '../imagery/imagery';
 import { flyToPlace } from '../map/mapView';
 import { state } from '../state';
 import { buildScenePayload, enterScene3D } from '../transition/transition';
+import { hideLoader, setLoaderMessage, showLoader } from '../ui/loader';
 import type { Place, StreetPhoto } from '../types';
+
+/** Voisinage vide (repli) : la 3D s'ouvre quand meme, centree sur le lieu. */
+function emptyNeighborhood(place: Place): NeighborhoodData {
+  return {
+    center: { lng: place.lng, lat: place.lat },
+    buildings: [],
+    furniture: [],
+    pois: [],
+    paths: [],
+  };
+}
 
 function esc(s: unknown): string {
   return String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -163,7 +175,9 @@ function wire3DButton(
     const btn = el.querySelector('#btn-3d') as HTMLButtonElement;
     btn.disabled = true;
     btn.textContent = 'Chargement de la 3D...';
+    showLoader('Chargement de la vue 3D (module WASM)…');
     const ok = await enterScene3D(buildScenePayload(place, nb, photos));
+    hideLoader();
     btn.disabled = false;
     btn.textContent = ok ? 'Explorer le voisinage en 3D' : '3D indisponible (build WASM requis)';
   });
@@ -174,10 +188,18 @@ function wire3DButton(
  * puis bascule. Utilisee par la bascule automatique de proximite.
  */
 export async function autoEnter3D(place: Place): Promise<boolean> {
-  const [neighborhood, photos] = await Promise.all([
-    fetchNeighborhood(place.lng, place.lat, 90).catch(() => null),
-    fetchNearbyPhotos(place.lng, place.lat, 120).catch(() => [] as StreetPhoto[]),
-  ]);
-  if (!neighborhood) return false;
-  return enterScene3D(buildScenePayload(place, neighborhood, photos));
+  showLoader('Chargement du voisinage (OpenStreetMap)…');
+  try {
+    const [neighborhood, photos] = await Promise.all([
+      fetchNeighborhood(place.lng, place.lat, 90).catch(() => null),
+      fetchNearbyPhotos(place.lng, place.lat, 120).catch(() => [] as StreetPhoto[]),
+    ]);
+    // Si Overpass n'a rien renvoye, on bascule quand meme en 3D (voisinage vide)
+    // plutot que d'echouer silencieusement : le WASM demarre et affiche le lieu.
+    const nb = neighborhood ?? emptyNeighborhood(place);
+    setLoaderMessage('Chargement de la vue 3D (module WASM)…');
+    return await enterScene3D(buildScenePayload(place, nb, photos));
+  } finally {
+    hideLoader();
+  }
 }

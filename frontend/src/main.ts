@@ -12,6 +12,7 @@ import {
 import { autoEnter3D, closePlacePanel, openPlacePanel } from './neighborhood/placePanel';
 import { exitScene3D, isScene3DActive, refreshScene3DTheme } from './transition/transition';
 import { initTheme, onThemeChange } from './theme';
+import { hideLoader, showLoader } from './ui/loader';
 import { state } from './state';
 import type { Place } from './types';
 
@@ -98,6 +99,7 @@ function handleDeepLink(): void {
 }
 
 async function boot(): Promise<void> {
+  showLoader('Chargement des données…');
   try {
     status('Chargement des données...');
     const cfg = await loadDataConfig();
@@ -129,6 +131,8 @@ async function boot(): Promise<void> {
   } catch (err) {
     console.error(err);
     status(`Erreur : ${(err as Error).message}`);
+  } finally {
+    hideLoader();
   }
 }
 
