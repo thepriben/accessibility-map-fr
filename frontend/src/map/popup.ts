@@ -1,6 +1,7 @@
 import maplibregl, { type Map as MlMap, type Popup } from 'maplibre-gl';
 import { knownCriteria } from '../a11y';
 import { prefetchNeighborhood } from '../data/overpass';
+import { prefetchScene3D } from '../transition/transition';
 import type { Place } from '../types';
 
 let popup: Popup | null = null;
@@ -26,6 +27,7 @@ export function showPlacePopup(
   const p = place.properties;
   // Precharge le voisinage : l'entree en 3D depuis ce popup sera quasi instantanee.
   prefetchNeighborhood(place.lng, place.lat);
+  prefetchScene3D();
   const crit = knownCriteria(p).slice(0, 6);
   const badges = crit.length
     ? crit

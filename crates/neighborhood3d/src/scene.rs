@@ -83,8 +83,6 @@ pub fn setup(
     // Palette "Doom" : materiaux plats (unlit), couleurs franches.
     let ground_c = if dark { (0.09, 0.10, 0.12) } else { (0.62, 0.60, 0.55) };
     let mat_ground = flat(&mut materials, ground_c.0, ground_c.1, ground_c.2);
-    let grid_c = if dark { (0.18, 0.20, 0.24) } else { (0.72, 0.70, 0.64) };
-    let mat_grid = flat(&mut materials, grid_c.0, grid_c.1, grid_c.2);
 
     // Murs de batiments : teintes retro variees + surbrillance pour Wikidata.
     let wall_palette: Vec<Handle<StandardMaterial>> = [
@@ -102,7 +100,6 @@ pub fn setup(
     // Batiment qui contient le lieu Acceslibre : surbrillance franche.
     let mat_target_building = flat(&mut materials, 0.95, 0.55, 0.20);
 
-    let mat_place = flat(&mut materials, 0.99, 0.84, 0.30);
     let mat_bench = flat(&mut materials, 0.62, 0.40, 0.22);
     let mat_bus = flat(&mut materials, 0.20, 0.45, 0.85);
     let mat_fountain = flat(&mut materials, 0.25, 0.60, 0.85);
@@ -128,38 +125,13 @@ pub fn setup(
     let unit_cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     let quad = meshes.add(Rectangle::new(1.0, 1.0));
 
-    // --- Sol + grille retro ---
+    // --- Sol ---
     commands.spawn(PbrBundle {
         mesh: meshes.add(Cuboid::new(400.0, 0.1, 400.0)),
         material: mat_ground.clone(),
         transform: Transform::from_xyz(0.0, -0.06, 0.0),
         ..default()
     });
-    let span = 120.0_f32;
-    let mut g = -span;
-    while g <= span {
-        commands.spawn(PbrBundle {
-            mesh: unit_cube.clone(),
-            material: mat_grid.clone(),
-            transform: Transform {
-                translation: Vec3::new(0.0, 0.0, g),
-                scale: Vec3::new(span * 2.0, 0.04, 0.15),
-                ..default()
-            },
-            ..default()
-        });
-        commands.spawn(PbrBundle {
-            mesh: unit_cube.clone(),
-            material: mat_grid.clone(),
-            transform: Transform {
-                translation: Vec3::new(g, 0.0, 0.0),
-                scale: Vec3::new(0.15, 0.04, span * 2.0),
-                ..default()
-            },
-            ..default()
-        });
-        g += 10.0;
-    }
 
     // --- Batiments extrudes ---
     for b in &payload.neighborhood.buildings {
@@ -328,22 +300,7 @@ pub fn setup(
         ));
     }
 
-    // --- Balise du lieu Acceslibre (au centre) : mat + disque au sol ---
-    commands.spawn((
-        PbrBundle {
-            mesh: meshes.add(Cylinder::new(0.5, 13.0)),
-            material: mat_place.clone(),
-            transform: Transform::from_xyz(0.0, 6.5, 0.0),
-            ..default()
-        },
-        AccessiblePlaceTag { nom: payload.place.nom.clone() },
-    ));
-    commands.spawn(PbrBundle {
-        mesh: meshes.add(Cylinder::new(3.2, 0.25)),
-        material: mat_place.clone(),
-        transform: Transform::from_xyz(0.0, 0.12, 0.0),
-        ..default()
-    });
+    // (Balise du lieu retiree pour l'instant : la 3D demarre sur les batiments.)
 
     // --- Eclairage (sobre, sans ombres pour la perf WASM) ---
     commands.insert_resource(AmbientLight {

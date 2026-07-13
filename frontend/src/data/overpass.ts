@@ -145,32 +145,11 @@ async function fetchNeighborhoodRaw(
   radiusM: number
 ): Promise<NeighborhoodData> {
   const b = bbox(lng, lat, radiusM);
+  // Etape actuelle : on ne recupere QUE les batiments (rapide). Le mobilier,
+  // les POI et les cheminements seront reintroduits plus tard.
   const query = `[out:json][timeout:25];
-    (
-      way["building"](${b});
-      node["amenity"="bench"](${b});
-      node["highway"="bus_stop"](${b});
-      node["public_transport"="platform"]["bus"="yes"](${b});
-      node["amenity"="fountain"](${b});
-      node["natural"="tree"](${b});
-      node["highway"="crossing"](${b});
-      node["barrier"="bollard"](${b});
-      node["highway"="street_lamp"](${b});
-      node["amenity"="drinking_water"](${b});
-      node["amenity"="waste_basket"](${b});
-      node["tourism"="hotel"](${b});
-      node["amenity"="restaurant"](${b});
-      way["amenity"="restaurant"](${b});
-      node["amenity"~"^(cafe|bar|pub)$"](${b});
-      node["amenity"~"^(community_centre|social_centre)$"](${b});
-      way["amenity"~"^(community_centre|social_centre)$"](${b});
-      node["amenity"="place_of_worship"](${b});
-      way["amenity"="place_of_worship"](${b});
-      way["footway"="sidewalk"](${b});
-      way["highway"="footway"](${b});
-      way["leisure"="park"](${b});
-    );
-    out geom tags center;`;
+    ( way["building"](${b}); );
+    out geom tags;`;
 
   const data = await overpassFetch(query);
 

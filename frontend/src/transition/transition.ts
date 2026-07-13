@@ -42,6 +42,11 @@ async function loadWasm(): Promise<WasmModule | null> {
 
 const CANVAS_ID = 'scene3d';
 
+/** Précharge (sans attendre) le module WASM pour une bascule 3D quasi instantanée. */
+export function prefetchScene3D(): void {
+  void loadWasm();
+}
+
 /**
  * Bascule sur la vue 3D : fondu du canvas Bevy par-dessus la carte, puis
  * lancement de la scene ECS avec les donnees du voisinage. Retourne false si
@@ -117,44 +122,18 @@ export function exitScene3D(): void {
   wasm?.stop_neighborhood?.();
 }
 
-const LEGEND: { c: string; label: string }[] = [
-  { c: '#fcd64c', label: 'Lieu ciblé (balise)' },
-  { c: '#f28c33', label: 'Bâtiment du lieu' },
-  { c: '#e04d4d', label: 'Restaurant' },
-  { c: '#cc8c40', label: 'Café / bar' },
-  { c: '#8c5abf', label: 'Hôtel' },
-  { c: '#33a69e', label: 'Lieu communautaire' },
-  { c: '#7380d9', label: 'Lieu cultuel' },
-  { c: '#3b73d9', label: 'Arrêt de bus' },
-  { c: '#3cb4d9', label: "Point d'eau" },
-  { c: '#d94d40', label: 'Obstacle (borne)' },
-  { c: '#9e6626', label: 'Banc' },
-  { c: '#3c8c47', label: 'Arbre' },
-];
-
 function sceneUiHtml(payload: ScenePayload): string {
   const nb = payload.neighborhood;
-  const a11y = payload.place.a11y ? `<span class="scene3d-a11y">${escapeHtml(payload.place.a11y)}</span>` : '';
-  const legend = LEGEND.map(
-    (l) => `<li><span class="lg-sw" style="background:${l.c}"></span>${escapeHtml(l.label)}</li>`
-  ).join('');
   return `
     <div class="scene3d-bar">
       <div class="scene3d-info">
         <strong>${escapeHtml(payload.place.nom)}</strong>
-        ${a11y}
-        <span class="scene3d-sub">Voisinage : ${nb.buildings.length} bâtiments &middot;
-          ${nb.furniture.length} mobiliers/obstacles &middot; ${nb.pois.length} lieux d'accueil &middot;
-          ${payload.photos.length} photos</span>
+        <span class="scene3d-sub">${nb.buildings.length} bâtiment(s) &middot; rayon 25 m</span>
         <span class="scene3d-sub">Souris : glisser = pivoter, clic droit = se déplacer, molette = zoom &middot;
           Clavier : flèches/ZQSD = se déplacer, A/E = pivoter, +/- = zoom</span>
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
-    </div>
-    <details class="scene3d-legend" open>
-      <summary>Légende</summary>
-      <ul>${legend}</ul>
-    </details>`;
+    </div>`;
 }
 
 function escapeHtml(s: string): string {
