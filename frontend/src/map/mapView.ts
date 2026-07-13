@@ -7,11 +7,13 @@ import { state } from '../state';
 import type { DataConfig, Place, PlaceProperties } from '../types';
 import { baseStyle } from './style';
 import { showPlacePopup, type PopupHandlers } from './popup';
+import { ClusterClient } from '../data/clusterClient';
 import {
   CLUSTER_LAYER,
   POINT_LAYER,
   SRC_ID,
   addGeoJsonClusters,
+  addManagedClusterSource,
   addPmtilesClusters,
 } from './layers';
 
@@ -19,9 +21,22 @@ const PM_SOURCE_LAYER = 'acceslibre';
 
 let map: MlMap | null = null;
 let geojsonData: GeoJSON.FeatureCollection | null = null;
+let cluster: ClusterClient | null = null;
+let totalCount = 0;
+let queryToken = 0;
 
 export function getMap(): MlMap | null {
   return map;
+}
+
+/** Client de clustering (mode points) : utilise par la liste et le deep-link. */
+export function getClusterClient(): ClusterClient | null {
+  return cluster;
+}
+
+/** Nombre total de lieux charges (pour l'affichage du statut). */
+export function dataCount(): number {
+  return totalCount || state.allPlaces.length;
 }
 
 /** Initialise la carte et branche les donnees selon le mode (geojson/pmtiles). */
@@ -57,19 +72,49 @@ export async function initMap(
   // Voile hors-France (DOM-TOM inclus) : ajoute avant les grappes pour rester dessous.
   await addFranceMask(map);
 
-  if (cfg.mode === 'geojson' && fc) {
+  if (cfg.mode === 'points') {
+    // Clustering cote client dans un worker : donnees hors du thread principal,
+    // seules les grappes visibles reviennent (pas de crash memoire).
+    addManagedClusterSource(map, { type: 'FeatureCollection', features: [] });
+    cluster = new ClusterClient();
+    totalCount = await cluster.init(asset(cfg.source));
+    wireInteractions(cfg, handlers);
+    await refreshClusters();
+    map.on('moveend', () => void refreshClusters());
+  } else if (cfg.mode === 'geojson' && fc) {
     geojsonData = fc;
     addGeoJsonClusters(map, fc);
+    wireInteractions(cfg, handlers);
   } else {
     addPmtilesClusters(map, asset(cfg.source), PM_SOURCE_LAYER);
+    wireInteractions(cfg, handlers);
   }
 
-  wireInteractions(cfg, handlers);
-
-  // Garde le spinner tant que les premieres tuiles (grappes) ne sont pas
-  // rendues : sur la France entiere, les PMTiles mettent un instant a arriver.
+  // Garde le spinner tant que les premieres grappes ne sont pas rendues.
   await firstTilesLoaded(map);
   return map;
+}
+
+/**
+ * Interroge le worker pour les grappes/points de la vue courante et les pousse
+ * dans la source geree. Les requetes obsoletes (deplacements rapides) sont
+ * ignorees via un jeton.
+ */
+async function refreshClusters(): Promise<void> {
+  if (!map || !cluster) return;
+  const b = map.getBounds();
+  const bbox: [number, number, number, number] = [
+    b.getWest(),
+    b.getSouth(),
+    b.getEast(),
+    b.getNorth(),
+  ];
+  const zoom = Math.floor(map.getZoom());
+  const token = (queryToken += 1);
+  const features = await cluster.query(bbox, zoom);
+  if (token !== queryToken || !map) return;
+  const src = map.getSource(SRC_ID) as GeoJSONSource | undefined;
+  src?.setData({ type: 'FeatureCollection', features });
 }
 
 /** Resout quand la carte a fini de charger/rendre ses tuiles (ou apres delai). */
@@ -138,7 +183,16 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
     const feat = e.features?.[0];
     if (!feat) return;
     const coords = (feat.geometry as GeoJSON.Point).coordinates as [number, number];
-    if (cfg.mode === 'geojson') {
+    if (cfg.mode === 'points') {
+      // Grappe Supercluster (worker) : on demande le zoom d'expansion.
+      const cid = feat.properties?.cluster_id;
+      if (cid != null && cluster) {
+        const zoom = await cluster.expansion(Number(cid));
+        map!.easeTo({ center: coords, zoom: Math.min(zoom, 20) });
+      } else {
+        map!.easeTo({ center: coords, zoom: Math.min((map!.getZoom() || 5) + 2, 20) });
+      }
+    } else if (cfg.mode === 'geojson') {
       const src = map!.getSource(SRC_ID) as GeoJSONSource;
       const clusterId = feat.properties?.cluster_id;
       const zoom = await src.getClusterExpansionZoom(clusterId);
@@ -177,8 +231,15 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
 }
 
 /** Recalcule l'affichage apres changement de filtres. */
-export function applyFilters(cfg: DataConfig): void {
+export async function applyFilters(cfg: DataConfig): Promise<void> {
   if (!map) return;
+  if (cfg.mode === 'points' && cluster) {
+    // Le worker re-clusterise le sous-ensemble filtre : grappes recomposees
+    // instantanement, a tous les zooms.
+    await cluster.filter([...state.activeFilters]);
+    await refreshClusters();
+    return;
+  }
   if (cfg.mode === 'geojson' && geojsonData) {
     const filtered = {
       type: 'FeatureCollection' as const,

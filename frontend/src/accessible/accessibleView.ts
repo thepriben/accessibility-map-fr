@@ -1,28 +1,33 @@
 import { a11ySummary, knownCriteria } from '../a11y';
-import { state } from '../state';
 import type { Place } from '../types';
 
-const MAX_RENDER = 400;
+export const MAX_RENDER = 400;
+
+export interface ListResult {
+  total: number;
+  places: Place[];
+}
 
 /**
  * Vue liste accessible (RGAA/WCAG) : liste navigable au clavier couvrant les
  * memes lieux que la carte. Chaque element est un bouton avec libelle explicite.
+ * Les donnees (total + premiers lieux) sont fournies par l'appelant.
  */
 export function renderAccessibleList(
   container: HTMLElement,
-  onSelect: (uuid: string) => void
+  result: ListResult,
+  onSelect: (place: Place) => void
 ): void {
-  const places = state.filteredPlaces();
-  const shown = places.slice(0, MAX_RENDER);
+  const shown = result.places.slice(0, MAX_RENDER);
 
   const frag = document.createDocumentFragment();
 
   const info = document.createElement('p');
   info.className = 'list-info';
   info.textContent =
-    places.length > MAX_RENDER
-      ? `${places.length} lieux trouvés. Les ${MAX_RENDER} premiers sont listés ; affinez les filtres pour réduire.`
-      : `${places.length} lieu(x) trouvé(s).`;
+    result.total > MAX_RENDER
+      ? `${result.total} lieux trouvés. Les ${MAX_RENDER} premiers sont listés ; affinez les filtres pour réduire.`
+      : `${result.total} lieu(x) trouvé(s).`;
   frag.appendChild(info);
 
   const list = document.createElement('ul');
@@ -36,7 +41,7 @@ export function renderAccessibleList(
   container.replaceChildren(frag);
 }
 
-function renderItem(p: Place, onSelect: (uuid: string) => void): HTMLLIElement {
+function renderItem(p: Place, onSelect: (place: Place) => void): HTMLLIElement {
   const li = document.createElement('li');
   li.className = 'place-list-item';
 
@@ -44,7 +49,7 @@ function renderItem(p: Place, onSelect: (uuid: string) => void): HTMLLIElement {
   btn.type = 'button';
   btn.className = 'place-list-button';
   btn.setAttribute('aria-label', `${p.properties.nom}. ${a11ySummary(p.properties)}`);
-  btn.addEventListener('click', () => onSelect(p.properties.uuid));
+  btn.addEventListener('click', () => onSelect(p));
 
   const name = document.createElement('span');
   name.className = 'place-name';

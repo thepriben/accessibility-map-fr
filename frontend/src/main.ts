@@ -1,9 +1,11 @@
 import { loadDataConfig, loadGeoJson } from './data/dataSource';
-import { renderAccessibleList } from './accessible/accessibleView';
+import { MAX_RENDER, renderAccessibleList, type ListResult } from './accessible/accessibleView';
 import { renderFilters } from './map/filters';
 import {
   applyFilters,
   currentZoom,
+  dataCount,
+  getClusterClient,
   getMap,
   initMap,
   nearestPlaceToCenter,
@@ -63,14 +65,20 @@ function setupTabs(): void {
   tabList.addEventListener('click', () => activate('list'));
 }
 
-function refreshViews(): void {
+/** Liste filtree : via le worker (mode points) ou l'etat memoire (echantillon). */
+async function listResult(): Promise<ListResult> {
+  const client = getClusterClient();
+  if (client) return client.list(MAX_RENDER);
+  const all = state.filteredPlaces();
+  return { total: all.length, places: all.slice(0, MAX_RENDER) };
+}
+
+async function refreshViews(): Promise<void> {
   const cfg = state.dataConfig;
-  if (cfg) applyFilters(cfg);
+  if (cfg) await applyFilters(cfg);
   const listContainer = document.getElementById('list-container')!;
-  renderAccessibleList(listContainer, (uuid) => {
-    const place = state.allPlaces.find((p) => p.properties.uuid === uuid);
-    if (place) selectPlace(place);
-  });
+  const result = await listResult();
+  renderAccessibleList(listContainer, result, (place) => selectPlace(place));
 }
 
 /** Bascule automatique en 3D quand on s'approche d'un lieu. */
@@ -90,11 +98,14 @@ async function maybeAutoEnter3D(): Promise<void> {
   if (!ok) status('3D indisponible (build WASM requis) - vue carte conservée.');
 }
 
-function handleDeepLink(): void {
+async function handleDeepLink(): Promise<void> {
   const m = /#place=([^&]+)/.exec(location.hash);
   if (!m) return;
   const uuid = decodeURIComponent(m[1]);
-  const place = state.allPlaces.find((p) => p.properties.uuid === uuid);
+  const client = getClusterClient();
+  const place = client
+    ? await client.place(Number(uuid))
+    : (state.allPlaces.find((p) => p.properties.uuid === uuid) ?? null);
   if (place) selectPlace(place);
 }
 
@@ -110,8 +121,8 @@ async function boot(): Promise<void> {
       onEnter3D: (place) => void enter3DForPlace(place),
     });
 
-    renderFilters(document.getElementById('filters')!, refreshViews);
-    refreshViews();
+    renderFilters(document.getElementById('filters')!, () => void refreshViews());
+    await refreshViews();
 
     // Bascule 3D de proximite au fil des deplacements/zoom.
     map.on('moveend', () => {
@@ -126,8 +137,8 @@ async function boot(): Promise<void> {
     });
 
     setupTabs();
-    handleDeepLink();
-    status(cfg.label ? `${cfg.label} - ${cfg.count ?? state.allPlaces.length} lieux` : '');
+    void handleDeepLink();
+    status(cfg.label ? `${cfg.label} - ${cfg.count ?? dataCount()} lieux` : '');
   } catch (err) {
     console.error(err);
     status(`Erreur : ${(err as Error).message}`);

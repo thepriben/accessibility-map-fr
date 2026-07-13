@@ -89,6 +89,17 @@ const clusterRadius: ExpressionSpecification = [
   30,
 ];
 
+/**
+ * Source GeoJSON "geree" (cluster: false) : le clustering est fait par le
+ * worker Supercluster, qui pousse ici les grappes/points visibles. Les grappes
+ * portent `point_count` (comme en mode geojson/pmtiles), donc les memes couches
+ * s'appliquent.
+ */
+export function addManagedClusterSource(map: MlMap, data: GeoJSON.FeatureCollection): void {
+  map.addSource(SRC_ID, { type: 'geojson', data });
+  addClusterLayers(map);
+}
+
 /** Ajoute une source GeoJSON clusterisee (mode dev / echantillon). */
 export function addGeoJsonClusters(map: MlMap, data: GeoJSON.FeatureCollection): void {
   map.addSource(SRC_ID, {

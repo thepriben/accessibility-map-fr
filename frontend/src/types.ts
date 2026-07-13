@@ -63,7 +63,7 @@ export interface StreetPhoto {
 
 /** Configuration de la source de donnees (mode geojson ou pmtiles). */
 export interface DataConfig {
-  mode: 'geojson' | 'pmtiles';
+  mode: 'geojson' | 'pmtiles' | 'points';
   source: string;
   label?: string;
   count?: number;
