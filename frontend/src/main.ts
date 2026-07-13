@@ -30,6 +30,15 @@ function selectPlace(place: Place): void {
   void openPlacePanel(place);
 }
 
+/** Depuis le popup : bascule directe en 3D dans le voisinage du lieu. */
+async function enter3DForPlace(place: Place): Promise<void> {
+  history.replaceState(null, '', `#place=${encodeURIComponent(place.properties.uuid)}`);
+  state.setSelected(place.properties.uuid);
+  status(`Passage en 3D : ${place.properties.nom}`);
+  const ok = await autoEnter3D(place);
+  if (!ok) status('3D indisponible (build WASM requis) - vue carte conservée.');
+}
+
 function setupTabs(): void {
   const tabMap = document.getElementById('tab-map')!;
   const tabList = document.getElementById('tab-list')!;
@@ -92,7 +101,10 @@ async function boot(): Promise<void> {
     const cfg = await loadDataConfig();
     const fc = cfg.mode === 'geojson' ? await loadGeoJson(cfg) : null;
 
-    const map = await initMap(cfg, fc, selectPlace);
+    const map = await initMap(cfg, fc, {
+      onDetails: selectPlace,
+      onEnter3D: (place) => void enter3DForPlace(place),
+    });
 
     renderFilters(document.getElementById('filters')!, refreshViews);
     refreshViews();

@@ -5,6 +5,7 @@ import { INITIAL_VIEW, asset } from '../config';
 import { state } from '../state';
 import type { DataConfig, Place, PlaceProperties } from '../types';
 import { baseStyle } from './style';
+import { showPlacePopup, type PopupHandlers } from './popup';
 import {
   CLUSTER_LAYER,
   POINT_LAYER,
@@ -26,7 +27,7 @@ export function getMap(): MlMap | null {
 export async function initMap(
   cfg: DataConfig,
   fc: GeoJSON.FeatureCollection | null,
-  onSelect: (place: Place) => void
+  handlers: PopupHandlers
 ): Promise<MlMap> {
   const protocol = new Protocol();
   maplibregl.addProtocol('pmtiles', protocol.tile);
@@ -52,6 +53,9 @@ export async function initMap(
 
   await new Promise<void>((resolve) => map!.on('load', () => resolve()));
 
+  // Voile hors-France (DOM-TOM inclus) : ajoute avant les grappes pour rester dessous.
+  await addFranceMask(map);
+
   if (cfg.mode === 'geojson' && fc) {
     geojsonData = fc;
     addGeoJsonClusters(map, fc);
@@ -59,11 +63,33 @@ export async function initMap(
     addPmtilesClusters(map, asset(cfg.source), PM_SOURCE_LAYER);
   }
 
-  wireInteractions(cfg, onSelect);
+  wireInteractions(cfg, handlers);
   return map;
 }
 
-function wireInteractions(cfg: DataConfig, onSelect: (place: Place) => void): void {
+/**
+ * Attenue tout ce qui n'est pas la France (metropole + DROM) via un voile
+ * semi-transparent : un polygone couvrant le monde, troue a l'emplacement de
+ * la France. La geometrie est pre-calculee dans france-mask.geojson.
+ */
+async function addFranceMask(m: MlMap): Promise<void> {
+  try {
+    const res = await fetch(asset('data/france-mask.geojson'));
+    if (!res.ok) return;
+    const mask = (await res.json()) as GeoJSON.GeoJSON;
+    m.addSource('france-mask', { type: 'geojson', data: mask });
+    m.addLayer({
+      id: 'france-mask',
+      type: 'fill',
+      source: 'france-mask',
+      paint: { 'fill-color': '#e9edf1', 'fill-opacity': 0.72 },
+    });
+  } catch {
+    /* masque optionnel : on ignore si indisponible */
+  }
+}
+
+function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
   if (!map) return;
 
   // Clic sur une grappe -> zoom (geojson : expansion native ; sinon zoom simple)
@@ -85,7 +111,8 @@ function wireInteractions(cfg: DataConfig, onSelect: (place: Place) => void): vo
     const feat = e.features?.[0];
     if (!feat) return;
     const [lng, lat] = (feat.geometry as GeoJSON.Point).coordinates as [number, number];
-    onSelect({ properties: feat.properties as unknown as PlaceProperties, lng, lat });
+    const place: Place = { properties: feat.properties as unknown as PlaceProperties, lng, lat };
+    showPlacePopup(map!, place, handlers);
   });
 
   for (const layer of [CLUSTER_LAYER, POINT_LAYER]) {

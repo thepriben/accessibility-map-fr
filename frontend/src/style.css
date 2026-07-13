@@ -211,6 +211,24 @@ a { color: var(--focus); }
 }
 .btn-3d:disabled { opacity: 0.6; cursor: wait; }
 
+/* Popup carto (infos Acceslibre + actions) */
+.ppop { font-size: 0.85rem; line-height: 1.35; }
+.ppop-title { margin: 0 0 2px; font-size: 0.98rem; }
+.ppop-sub { margin: 0 0 8px; color: var(--muted); }
+.ppop-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+.ppop-badge {
+  border-radius: 999px; padding: 2px 8px; font-size: 0.72rem; white-space: nowrap;
+}
+.ppop-badge.badge-ok { background: #e3f5ea; color: #1c7a43; }
+.ppop-badge.badge-no { background: #f3eaea; color: #9a4444; }
+.ppop-actions { display: flex; gap: 6px; }
+.ppop-btn {
+  flex: 1 1 auto; border: 0; border-radius: 8px; padding: 8px 10px;
+  cursor: pointer; font-size: 0.82rem;
+}
+.ppop-3d { background: var(--accent); color: #fff; }
+.ppop-details { background: #eef2f6; color: var(--text, #1c2430); }
+
 .status {
   position: fixed; left: 8px; bottom: 8px; z-index: 30;
   background: rgba(28, 36, 48, 0.9); color: #fff;
