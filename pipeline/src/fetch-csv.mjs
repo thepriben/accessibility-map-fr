@@ -35,11 +35,43 @@ function bool(v) {
   return null;
 }
 
+// Boites englobantes France (metropole + Corse + DROM/COM principaux).
+// Sert a valider les coordonnees et a corriger les saisies lat/long inversees.
+const FR_BBOXES = [
+  [-5.6, 41.2, 9.8, 51.6], // metropole + Corse
+  [-61.9, 15.8, -60.7, 16.6], // Guadeloupe
+  [-61.3, 14.3, -60.7, 15.0], // Martinique
+  [-54.7, 2.0, -51.5, 5.9], // Guyane
+  [55.1, -21.5, 55.9, -20.8], // La Reunion
+  [45.0, -13.1, 45.4, -12.6], // Mayotte
+  [-56.6, 46.7, -56.1, 47.2], // Saint-Pierre-et-Miquelon
+  [-63.2, 17.8, -62.7, 18.2], // Saint-Martin / Saint-Barthelemy
+];
+
+function inFrance(lon, lat) {
+  return FR_BBOXES.some(([w, s, e, n]) => lon >= w && lon <= e && lat >= s && lat <= n);
+}
+
+/**
+ * Valide/corrige les coordonnees. Certaines fiches Acceslibre ont lat/long
+ * inversees a la source (ex. "Novotel Paris Charenton" projete dans l'ocean
+ * Indien). Si le couple direct est hors France mais le couple permute tombe en
+ * France, on permute. Sinon (aberrant/etranger), on ecarte le point.
+ */
+function normalizeCoords(lon, lat) {
+  if (inFrance(lon, lat)) return [lon, lat];
+  if (inFrance(lat, lon)) return [lat, lon];
+  return null;
+}
+
 /** Ligne CSV plate -> proprietes normalisees (memes cles que la version API). */
 function rowToFeature(row) {
-  const lon = parseFloat(row.longitude);
-  const lat = parseFloat(row.latitude);
-  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+  const rawLon = parseFloat(row.longitude);
+  const rawLat = parseFloat(row.latitude);
+  if (!Number.isFinite(rawLon) || !Number.isFinite(rawLat)) return null;
+  const fixed = normalizeCoords(rawLon, rawLat);
+  if (!fixed) return null;
+  const [lon, lat] = fixed;
 
   const stepFreeEntrance = bool(row.entree_plain_pied);
   const entranceElevator = bool(row.entree_ascenseur);
