@@ -98,7 +98,9 @@ function rebuild(): void {
       dept: code,
     },
   }));
-  index = new Supercluster({ radius: 55, maxZoom: 17, minZoom: 0 });
+  // radius plus petit + maxZoom plus bas => les grappes se separent plus tot,
+  // donc moins de clics pour atteindre les etablissements individuels.
+  index = new Supercluster({ radius: 45, maxZoom: 15, minZoom: 0 });
   index.load(feats);
 }
 

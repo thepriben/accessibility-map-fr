@@ -182,19 +182,22 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
     if (!feat) return;
     const coords = (feat.geometry as GeoJSON.Point).coordinates as [number, number];
     if (cfg.mode === 'points') {
-      // Regroupement par departement (vue France) : on zoome sur le departement.
+      const here = map!.getZoom() || 5;
+      // Regroupement par departement (vue France) : gros saut direct dans le
+      // departement (niveau ville), pour ne pas multiplier les clics.
       if (feat.properties?.dept != null) {
-        map!.easeTo({ center: coords, zoom: 8 });
+        map!.easeTo({ center: coords, zoom: 11 });
         return;
       }
-      // Grappe Supercluster (worker) : on demande le zoom d'expansion.
+      // Grappe Supercluster : on saute franchement (au moins +3 niveaux, ou le
+      // zoom d'expansion si plus grand) pour atteindre vite les etablissements.
       const cid = feat.properties?.cluster_id;
+      let target = here + 4;
       if (cid != null && cluster) {
-        const zoom = await cluster.expansion(Number(cid));
-        map!.easeTo({ center: coords, zoom: Math.min(zoom, 20) });
-      } else {
-        map!.easeTo({ center: coords, zoom: Math.min((map!.getZoom() || 5) + 2, 20) });
+        const exp = await cluster.expansion(Number(cid));
+        target = Math.max(exp, here + 4);
       }
+      map!.easeTo({ center: coords, zoom: Math.min(target, 16) });
     } else if (cfg.mode === 'geojson') {
       const src = map!.getSource(SRC_ID) as GeoJSONSource;
       const clusterId = feat.properties?.cluster_id;
