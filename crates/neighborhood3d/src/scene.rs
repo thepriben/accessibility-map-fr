@@ -1,5 +1,6 @@
 //! Construction de la scene ECS a partir de la charge utile du voisinage.
 
+use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::prelude::*;
 
 use crate::camera::OrbitCamera;
@@ -380,6 +381,11 @@ pub fn setup(
     commands.spawn((
         Camera3dBundle {
             transform: Transform::from_translation(cam_pos).looking_at(orbit.focus, Vec3::Y),
+            // Rendu "Doom" plat + build WASM minimal : on desactive le tonemapping
+            // (sinon TonyMcMapface reclame une LUT KTX2 absente de nos features ->
+            // ecran entierement magenta sous WebGL2) et le tramage associe.
+            tonemapping: Tonemapping::None,
+            deband_dither: DebandDither::Disabled,
             ..default()
         },
         FogSettings {
