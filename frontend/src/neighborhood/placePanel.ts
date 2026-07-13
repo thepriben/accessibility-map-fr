@@ -1,6 +1,6 @@
 import { knownCriteria } from '../a11y';
 import { fetchNeighborhood, type NeighborhoodData } from '../data/overpass';
-import { findWikidataNear, getWikidataEntity, type WikidataInfo } from '../data/wikidata';
+import { findNearbyCommonsPhoto } from '../data/commons';
 import { flyToPlace } from '../map/mapView';
 import { state } from '../state';
 import { buildScenePayload, enterScene3D } from '../transition/transition';
@@ -18,6 +18,9 @@ function emptyNeighborhood(place: Place): NeighborhoodData {
     furniture: [],
     pois: [],
     paths: [],
+    parking: [],
+    busStops: [],
+    benches: [],
   };
 }
 
@@ -57,73 +60,27 @@ export async function openPlacePanel(place: Place): Promise<void> {
     () => null
   );
   wire3DButton(panel, place, neighborhood);
-  void renderWikidata(panel, place, neighborhood);
+  void renderNearbyPhoto(panel, place);
 }
 
-/** Point-dans-polygone (ray casting) sur un anneau [lng,lat]. */
-function ringContains(ring: [number, number][], x: number, y: number): boolean {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
-    const [xi, yi] = ring[i];
-    const [xj, yj] = ring[j];
-    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-12) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-/** Cherche le bâtiment cible (contenant le point) et son éventuel QID Wikidata. */
-function targetBuildingQid(nb: NeighborhoodData | null, lng: number, lat: number): string | null {
-  if (!nb) return null;
-  for (const b of nb.buildings) {
-    if (b.wikidata && b.ring.length >= 3 && ringContains(b.ring, lng, lat)) return b.wikidata;
-  }
-  // À défaut, tout bâtiment du voisinage portant un QID.
-  for (const b of nb.buildings) {
-    if (b.wikidata) return b.wikidata;
-  }
-  return null;
-}
-
-/** Enrichit la fiche avec les infos Wikidata du bâtiment (si disponibles). */
-async function renderWikidata(
-  panel: HTMLElement,
-  place: Place,
-  nb: NeighborhoodData | null
-): Promise<void> {
-  const el = panel.querySelector('#panel-wikidata');
+/** Affiche une photo Wikimedia Commons proche du lieu (si disponible). */
+async function renderNearbyPhoto(panel: HTMLElement, place: Place): Promise<void> {
+  const el = panel.querySelector('#panel-photo');
   if (!el) return;
 
-  const qid = targetBuildingQid(nb, place.lng, place.lat);
-  let info: WikidataInfo | null = null;
-  try {
-    info = qid
-      ? await getWikidataEntity(qid)
-      : await findWikidataNear(place.lng, place.lat);
-  } catch {
-    info = null;
-  }
-
+  const photo = await findNearbyCommonsPhoto(place.lng, place.lat).catch(() => null);
   // La fiche a pu être fermée/rouverte entre-temps : on ignore alors le résultat.
-  if (!info || panel.hidden) return;
+  if (!photo || panel.hidden) return;
 
-  const img = info.imageUrl
-    ? `<a class="wd-photo" href="${esc(info.imageSourceUrl)}" target="_blank" rel="noopener"
-         title="Voir l'original et la licence sur Wikimedia Commons">
-         <img src="${esc(info.imageUrl)}" alt="Photo de ${esc(info.label ?? 'ce bâtiment')}" loading="lazy">
-       </a>`
-    : '';
-
+  const lic = photo.license ? ` &middot; ${esc(photo.license)}` : '';
   el.innerHTML = `
-    <h3 class="panel-sub">Le bâtiment</h3>
-    ${img}
-    ${info.label ? `<p class="wd-name">${esc(info.label)}</p>` : ''}
-    ${info.description ? `<p class="wd-desc">${esc(info.description)}</p>` : ''}
+    <h3 class="panel-sub">Photo à proximité</h3>
+    <a class="wd-photo" href="${esc(photo.sourceUrl)}" target="_blank" rel="noopener"
+       title="Voir l'original et la licence sur Wikimedia Commons">
+      <img src="${esc(photo.thumbUrl)}" alt="Photo à proximité : ${esc(photo.title)}" loading="lazy">
+    </a>
     <p class="wd-links">
-      <a href="${esc(info.wikidataUrl)}" target="_blank" rel="noopener">Fiche Wikidata &nearr;</a>${
-        info.imageSourceUrl
-          ? ` &middot; <a href="${esc(info.imageSourceUrl)}" target="_blank" rel="noopener">Photo &amp; licence &nearr;</a>`
-          : ''
-      }
+      <a href="${esc(photo.sourceUrl)}" target="_blank" rel="noopener">Wikimedia Commons &nearr;</a>${lic}
     </p>`;
 }
 
@@ -149,7 +106,7 @@ function skeleton(place: Place): string {
     <h3 class="panel-sub">Accessibilité</h3>
     <ul id="panel-criteria" class="panel-criteria"><li>Chargement...</li></ul>
 
-    <div id="panel-wikidata" class="panel-wikidata"></div>
+    <div id="panel-photo" class="panel-wikidata"></div>
 
     <div id="panel-3d" class="panel-3d"></div>`;
 }

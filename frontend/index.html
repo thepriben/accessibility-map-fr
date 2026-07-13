@@ -17,13 +17,31 @@
       <button id="home-btn" class="app-title" type="button" title="Revenir à l'accueil" aria-label="Carte d'accessibilité — revenir à l'accueil">
         Carte d'accessibilité
       </button>
+
+      <!-- Recherche unique : nom, ville ou code postal -> téléportation -->
+      <div id="search" class="search" role="search">
+        <label for="search-input" class="sr-only">Rechercher un lieu ou un code postal</label>
+        <input
+          id="search-input"
+          class="search-input"
+          type="search"
+          placeholder="Code postal, ville ou nom d'un lieu…"
+          autocomplete="off"
+          role="combobox"
+          aria-expanded="false"
+          aria-controls="search-results"
+          aria-autocomplete="list"
+        />
+        <ul id="search-results" class="search-results" role="listbox" aria-label="Résultats de recherche" hidden></ul>
+      </div>
+
       <div class="header-actions">
         <div class="view-switch" role="tablist" aria-label="Choix de la vue">
           <button id="tab-map" role="tab" aria-selected="true" aria-controls="view-map" class="is-active">
             Carte
           </button>
           <button id="tab-list" role="tab" aria-selected="false" aria-controls="view-list">
-            Liste accessible
+            Liste
           </button>
         </div>
         <button id="toggle-3d" class="toggle-3d" type="button" aria-pressed="false" title="Basculer entre la vue 3D et la carte 2D">Vue 3D</button>
@@ -32,32 +50,23 @@
     </header>
 
     <main id="main">
-      <!-- Panneau lateral : recherche + filtres par critere d'accessibilite -->
-      <aside id="filters" class="filters" aria-label="Recherche et filtres d'accessibilité">
-        <div id="search" class="search">
-          <label for="search-input" class="search-label">Rechercher un lieu</label>
-          <input
-            id="search-input"
-            class="search-input"
-            type="search"
-            placeholder="Nom, ville, code postal…"
-            autocomplete="off"
-            role="combobox"
-            aria-expanded="false"
-            aria-controls="search-results"
-            aria-autocomplete="list"
-          />
-          <ul id="search-results" class="search-results" role="listbox" aria-label="Résultats de recherche" hidden></ul>
-        </div>
-        <div id="filters-body"></div>
-      </aside>
-
       <!-- Vue carte 2D -->
       <section id="view-map" class="view view-map" role="tabpanel" aria-labelledby="tab-map">
         <div id="map" class="map" role="application" aria-label="Carte des lieux accessibles"></div>
-        <!-- Canvas de la scene 3D (Bevy/WASM), superpose et masque par defaut -->
+        <!-- Canvas de la scene 3D (Three.js), superpose et masque par defaut -->
         <canvas id="scene3d" class="scene3d" aria-hidden="true" tabindex="-1"></canvas>
         <div id="scene3d-ui" class="scene3d-ui" hidden></div>
+        <!-- Légende de la carte 2D -->
+        <details id="map-legend" class="map-legend" open>
+          <summary>Légende</summary>
+          <ul>
+            <li><span class="lg-dot lg-cluster"></span> Regroupement de lieux (nombre)</li>
+            <li><span class="lg-pin lg-ok"></span> Entrée accessible en fauteuil</li>
+            <li><span class="lg-pin lg-no"></span> Entrée non accessible</li>
+            <li><span class="lg-pin lg-unknown"></span> Accessibilité non renseignée</li>
+            <li class="lg-note">Au niveau France : un regroupement par département.</li>
+          </ul>
+        </details>
       </section>
 
       <!-- Vue liste accessible (RGAA/WCAG) -->

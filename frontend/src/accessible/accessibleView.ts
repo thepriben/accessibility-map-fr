@@ -26,8 +26,8 @@ export function renderAccessibleList(
   info.className = 'list-info';
   info.textContent =
     result.total > MAX_RENDER
-      ? `${result.total} lieux trouvés. Les ${MAX_RENDER} premiers sont listés ; affinez les filtres pour réduire.`
-      : `${result.total} lieu(x) trouvé(s).`;
+      ? `${result.total} lieux dans la zone affichée. Les ${MAX_RENDER} premiers sont listés ; zoomez pour affiner.`
+      : `${result.total} lieu(x) dans la zone affichée.`;
   frag.appendChild(info);
 
   const list = document.createElement('ul');

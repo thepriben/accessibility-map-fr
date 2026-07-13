@@ -20,7 +20,6 @@ import {
 const PM_SOURCE_LAYER = 'acceslibre';
 
 let map: MlMap | null = null;
-let geojsonData: GeoJSON.FeatureCollection | null = null;
 let cluster: ClusterClient | null = null;
 let totalCount = 0;
 let queryToken = 0;
@@ -82,7 +81,6 @@ export async function initMap(
     await refreshClusters();
     map.on('moveend', () => void refreshClusters());
   } else if (cfg.mode === 'geojson' && fc) {
-    geojsonData = fc;
     addGeoJsonClusters(map, fc);
     wireInteractions(cfg, handlers);
   } else {
@@ -184,6 +182,11 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
     if (!feat) return;
     const coords = (feat.geometry as GeoJSON.Point).coordinates as [number, number];
     if (cfg.mode === 'points') {
+      // Regroupement par departement (vue France) : on zoome sur le departement.
+      if (feat.properties?.dept != null) {
+        map!.easeTo({ center: coords, zoom: 8 });
+        return;
+      }
       // Grappe Supercluster (worker) : on demande le zoom d'expansion.
       const cid = feat.properties?.cluster_id;
       if (cid != null && cluster) {
@@ -230,41 +233,6 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
   }
 }
 
-/** Recalcule l'affichage apres changement de filtres. */
-export async function applyFilters(cfg: DataConfig): Promise<void> {
-  if (!map) return;
-  if (cfg.mode === 'points' && cluster) {
-    // Le worker re-clusterise le sous-ensemble filtre : grappes recomposees
-    // instantanement, a tous les zooms.
-    await cluster.filter([...state.activeFilters]);
-    await refreshClusters();
-    return;
-  }
-  if (cfg.mode === 'geojson' && geojsonData) {
-    const filtered = {
-      type: 'FeatureCollection' as const,
-      features: state.filteredPlaces().map((p) => ({
-        type: 'Feature' as const,
-        geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] },
-        properties: p.properties,
-      })),
-    };
-    (map.getSource(SRC_ID) as GeoJSONSource).setData(filtered);
-  } else {
-    // Mode pmtiles : les grappes sont pre-agregees ; on filtre les points isoles.
-    const keys = [...state.activeFilters];
-    const filter =
-      keys.length === 0
-        ? (['!', ['has', 'point_count']] as unknown as maplibregl.FilterSpecification)
-        : ([
-            'all',
-            ['!', ['has', 'point_count']],
-            ...keys.map((k) => ['==', ['get', k], true]),
-          ] as unknown as maplibregl.FilterSpecification);
-    map.setFilter(POINT_LAYER, filter);
-  }
-}
-
 /** Centre la carte sur un lieu (utilise par la liste accessible et le deep-link). */
 export function flyToPlace(lng: number, lat: number, zoom = 17): void {
   map?.flyTo({ center: [lng, lat], zoom, speed: 1.2 });
@@ -279,6 +247,13 @@ function metersBetween(a: [number, number], b: [number, number]): number {
 /** Zoom courant de la carte (pour la bascule 3D de proximite). */
 export function currentZoom(): number {
   return map?.getZoom() ?? 0;
+}
+
+/** Emprise visible [ouest, sud, est, nord], ou null si la carte n'est pas prete. */
+export function currentBbox(): [number, number, number, number] | null {
+  if (!map) return null;
+  const b = map.getBounds();
+  return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
 }
 
 /**

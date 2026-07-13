@@ -1,8 +1,7 @@
 import { loadDataConfig, loadGeoJson } from './data/dataSource';
 import { MAX_RENDER, renderAccessibleList, type ListResult } from './accessible/accessibleView';
-import { renderFilters } from './map/filters';
 import {
-  applyFilters,
+  currentBbox,
   currentZoom,
   dataCount,
   flyToPlace,
@@ -21,11 +20,13 @@ import { INITIAL_VIEW } from './config';
 import type { Place } from './types';
 
 // Bascule 3D automatique : au-dela de ce zoom, si un lieu est proche du centre,
-// on passe en 3D. On re-arme la bascule seulement apres un dezoom en dessous du
-// seuil de re-armement (evite de re-basculer juste apres etre revenu a la carte).
+// on passe en 3D. On memorise le dernier lieu entre en 3D (par uuid) : on ne
+// re-bascule pas sur le meme lieu (evite de re-entrer juste apres la sortie),
+// mais un lieu voisin different declenche bien la 3D. Un dezoom sous le seuil de
+// re-armement oublie ce lieu (on pourra y revenir).
 const AUTO_3D_ZOOM = 18;
 const REARM_ZOOM = 16.5;
-let auto3dArmed = true;
+let lastAuto3dUuid: string | null = null;
 
 const statusEl = document.getElementById('status')!;
 function status(msg: string): void {
@@ -44,6 +45,7 @@ function selectPlace(place: Place): void {
 /** Depuis le popup : bascule directe en 3D dans le voisinage du lieu. */
 async function enter3DForPlace(place: Place): Promise<void> {
   lastSelectedPlace = place;
+  lastAuto3dUuid = place.properties.uuid;
   history.replaceState(null, '', `#place=${encodeURIComponent(place.properties.uuid)}`);
   state.setSelected(place.properties.uuid);
   status(`Passage en 3D : ${place.properties.nom}`);
@@ -110,6 +112,7 @@ function setupSearch(): void {
   let items: Place[] = [];
   let active = -1;
   let token = 0;
+  let lastQuery = '';
 
   const close = (): void => {
     results.hidden = true;
@@ -120,10 +123,12 @@ function setupSearch(): void {
   };
 
   const choose = (p: Place): void => {
-    input.value = p.properties.nom;
+    // Code postal seul -> vue de quartier ; sinon on cadre sur le lieu précis.
+    const isPostal = /^\d{4,5}$/.test(lastQuery);
+    if (!isPostal) input.value = p.properties.nom;
     close();
-    flyToPlace(p.lng, p.lat, 18);
-    selectPlace(p);
+    flyToPlace(p.lng, p.lat, isPostal ? 14 : 18);
+    if (!isPostal) selectPlace(p);
   };
 
   const updateActive = (): void => {
@@ -172,6 +177,7 @@ function setupSearch(): void {
 
   input.addEventListener('input', () => {
     const q = input.value.trim();
+    lastQuery = q;
     window.clearTimeout(timer);
     if (q.length < 2) {
       items = [];
@@ -212,17 +218,20 @@ function setupSearch(): void {
   });
 }
 
-/** Liste filtree : via le worker (mode points) ou l'etat memoire (echantillon). */
+/** Liste des lieux dans l'emprise visible (worker en mode points, sinon mémoire). */
 async function listResult(): Promise<ListResult> {
+  const bbox = currentBbox();
   const client = getClusterClient();
-  if (client) return client.list(MAX_RENDER);
-  const all = state.filteredPlaces();
-  return { total: all.length, places: all.slice(0, MAX_RENDER) };
+  if (client) return bbox ? client.listBbox(bbox, MAX_RENDER) : client.list(MAX_RENDER);
+  const all = state.allPlaces;
+  const inB = bbox
+    ? all.filter((p) => p.lng >= bbox[0] && p.lng <= bbox[2] && p.lat >= bbox[1] && p.lat <= bbox[3])
+    : all;
+  return { total: inB.length, places: inB.slice(0, MAX_RENDER) };
 }
 
+/** Rafraîchit la liste accessible (synchronisée à l'emprise de la carte). */
 async function refreshViews(): Promise<void> {
-  const cfg = state.dataConfig;
-  if (cfg) await applyFilters(cfg);
   const listContainer = document.getElementById('list-container')!;
   const result = await listResult();
   renderAccessibleList(listContainer, result, (place) => selectPlace(place));
@@ -231,13 +240,15 @@ async function refreshViews(): Promise<void> {
 /** Bascule automatique en 3D quand on s'approche d'un lieu. */
 async function maybeAutoEnter3D(): Promise<void> {
   const z = currentZoom();
-  if (z < REARM_ZOOM) auto3dArmed = true;
-  if (z < AUTO_3D_ZOOM || !auto3dArmed || isScene3DActive()) return;
+  if (z < REARM_ZOOM) lastAuto3dUuid = null; // dezoom : on pourra revenir sur ce lieu
+  if (z < AUTO_3D_ZOOM || isScene3DActive()) return;
 
   const place = nearestPlaceToCenter(70);
   if (!place) return;
+  // Ne pas re-basculer sur le meme lieu (ex. juste apres etre revenu a la carte).
+  if (place.properties.uuid === lastAuto3dUuid) return;
 
-  auto3dArmed = false;
+  lastAuto3dUuid = place.properties.uuid;
   lastSelectedPlace = place;
   history.replaceState(null, '', `#place=${encodeURIComponent(place.properties.uuid)}`);
   state.setSelected(place.properties.uuid);
@@ -252,6 +263,7 @@ function resetToHome(): void {
   closePlacePanel();
   state.setSelected(null);
   lastSelectedPlace = null;
+  lastAuto3dUuid = null;
 
   const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
   if (searchInput) {
@@ -259,8 +271,6 @@ function resetToHome(): void {
     searchInput.dispatchEvent(new Event('input'));
   }
 
-  state.activeFilters.clear();
-  renderFilters(document.getElementById('filters-body')!, () => void refreshViews());
   void refreshViews();
 
   (document.getElementById('tab-map') as HTMLButtonElement | null)?.click();
@@ -321,12 +331,12 @@ async function boot(): Promise<void> {
       onEnter3D: (place) => void enter3DForPlace(place),
     });
 
-    renderFilters(document.getElementById('filters-body')!, () => void refreshViews());
     setupSearch();
     await refreshViews();
 
-    // Bascule 3D de proximite au fil des deplacements/zoom.
+    // Au fil des deplacements/zoom : liste synchronisee sur l'emprise + bascule 3D.
     map.on('moveend', () => {
+      void refreshViews();
       void maybeAutoEnter3D();
     });
 

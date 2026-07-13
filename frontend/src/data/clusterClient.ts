@@ -69,6 +69,12 @@ export class ClusterClient {
     return { total: r.total as number, places: r.places as Place[] };
   }
 
+  /** Liste des lieux dans l'emprise visible (bbox = [ouest, sud, est, nord]). */
+  async listBbox(bbox: [number, number, number, number], limit: number): Promise<ListResult> {
+    const r = await this.call({ type: 'listBbox', bbox, limit });
+    return { total: r.total as number, places: r.places as Place[] };
+  }
+
   async place(i: number): Promise<Place | null> {
     const r = await this.call({ type: 'place', i });
     return (r.place as Place | null) ?? null;

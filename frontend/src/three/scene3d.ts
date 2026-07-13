@@ -2,6 +2,87 @@ import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import type { NeighborhoodData, OsmBuilding } from '../data/overpass';
 
+// Couleurs OSM nommees usuelles (tag colour) -> hex, pour les bancs.
+const NAMED_COLOURS: Record<string, number> = {
+  brown: 0x8b5a2b,
+  wood: 0x9c6b3f,
+  wooden: 0x9c6b3f,
+  red: 0xb23a3a,
+  green: 0x3a7d44,
+  blue: 0x3a5b9b,
+  black: 0x2b2b2b,
+  white: 0xe6e6e6,
+  grey: 0x8a8a8a,
+  gray: 0x8a8a8a,
+  silver: 0xb8bcc0,
+  yellow: 0xcaa63a,
+  orange: 0xd07a2c,
+  beige: 0xd8c9a3,
+};
+
+const BENCH_DEFAULT = 0x9c6b3f; // bois par defaut
+
+/** Convertit une valeur OSM `colour` en couleur Three (hex, nom, sinon defaut). */
+function parseColour(c: string | null): number {
+  if (!c) return BENCH_DEFAULT;
+  const v = c.trim().toLowerCase();
+  if (/^#([0-9a-f]{6})$/.test(v)) return parseInt(v.slice(1), 16);
+  if (/^#([0-9a-f]{3})$/.test(v)) {
+    const r = v[1];
+    const g = v[2];
+    const b = v[3];
+    return parseInt(`${r}${r}${g}${g}${b}${b}`, 16);
+  }
+  return NAMED_COLOURS[v] ?? BENCH_DEFAULT;
+}
+
+/**
+ * Etiquette texte flottante (sprite) : petit panneau lisible face camera. Sert
+ * a annoter les places PMR et les arrets de bus (nom + ligne).
+ */
+function makeLabel(lines: string[], opts: { bg: string; fg: string; worldH?: number }): THREE.Sprite {
+  const pad = 14;
+  const lineH = 30;
+  const font = '600 24px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+  const measure = document.createElement('canvas').getContext('2d')!;
+  measure.font = font;
+  const textW = Math.max(...lines.map((l) => measure.measureText(l).width));
+  const w = Math.ceil(textW + pad * 2);
+  const h = Math.ceil(lines.length * lineH + pad * 2);
+
+  const canvas = document.createElement('canvas');
+  const dpr = 2;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const g = canvas.getContext('2d')!;
+  g.scale(dpr, dpr);
+  g.font = font;
+  g.textBaseline = 'middle';
+
+  const r = 10;
+  g.fillStyle = opts.bg;
+  g.beginPath();
+  g.moveTo(r, 0);
+  g.arcTo(w, 0, w, h, r);
+  g.arcTo(w, h, 0, h, r);
+  g.arcTo(0, h, 0, 0, r);
+  g.arcTo(0, 0, w, 0, r);
+  g.closePath();
+  g.fill();
+
+  g.fillStyle = opts.fg;
+  g.textAlign = 'center';
+  lines.forEach((l, i) => g.fillText(l, w / 2, pad + lineH / 2 + i * lineH));
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true });
+  const sprite = new THREE.Sprite(mat);
+  const worldH = opts.worldH ?? 1.7;
+  sprite.scale.set((worldH * w) / h, worldH, 1);
+  return sprite;
+}
+
 export interface Scene3DPayload {
   place: { nom: string; lng: number; lat: number };
   neighborhood: NeighborhoodData;
@@ -52,7 +133,8 @@ const COLOR_TARGET = 0xef8b4e; // lieu cible : orange chaud (conserve)
 interface Theme {
   bg: number;
   ground: number;
-  path: number;
+  path: number; // cheminements pietons (trottoirs / footways)
+  road: number; // chaussee carrossable
   wall: number; // batiments neutres (tous sauf la cible)
   sky: number;
   hemiGround: number;
@@ -67,7 +149,8 @@ function themeColors(dark: boolean): Theme {
     ? {
         bg: 0x0e1219,
         ground: 0x1a1f29,
-        path: 0x6b7791,
+        path: 0x8b97b1,
+        road: 0x2c313b,
         wall: 0x3a4150,
         sky: 0x2a3446,
         hemiGround: 0x0c0f14,
@@ -80,6 +163,7 @@ function themeColors(dark: boolean): Theme {
         bg: 0xe8edf3,
         ground: 0xb9b3a6,
         path: 0xeef1f5,
+        road: 0x8b9098,
         wall: 0xc6c8cc,
         sky: 0xeaf1fb,
         hemiGround: 0x9a948a,
@@ -173,6 +257,50 @@ function addEntranceMarker(scene: THREE.Scene, hasTargetBuilding: boolean): void
   scene.add(group);
 }
 
+/** Petit banc : assise (+ dossier optionnel), couleur issue d'OSM si connue. */
+function makeBench(x: number, z: number, colour: string | null, withBackrest: boolean): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: parseColour(colour), roughness: 0.75 });
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.08, 0.45), mat);
+  seat.position.y = 0.46;
+  seat.castShadow = true;
+  g.add(seat);
+  for (const lx of [-0.7, 0.7]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.46, 0.4), mat);
+    leg.position.set(lx, 0.23, 0);
+    leg.castShadow = true;
+    g.add(leg);
+  }
+  if (withBackrest) {
+    const back = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.42, 0.06), mat);
+    back.position.set(0, 0.74, -0.19);
+    back.castShadow = true;
+    g.add(back);
+  }
+  g.position.set(x, 0, z);
+  return g;
+}
+
+/** Poteau + panneau d'arrêt de bus (le nom/ligne sont portés par une étiquette). */
+function makeBusStop(
+  x: number,
+  z: number,
+  poleMat: THREE.Material,
+  signMat: THREE.Material
+): THREE.Group {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.8, 10), poleMat);
+  pole.position.y = 1.4;
+  pole.castShadow = true;
+  g.add(pole);
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.36, 0.05), signMat);
+  sign.position.set(0, 2.55, 0);
+  sign.castShadow = true;
+  g.add(sign);
+  g.position.set(x, 0, z);
+  return g;
+}
+
 /** Construit (ou reconstruit) la scene Three.js dans le canvas fourni. */
 export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload): void {
   stopScene3D();
@@ -248,10 +376,18 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // empreinte de batiment, et pour s'orienter dans le voisinage.
   addEntranceMarker(scene, hasTargetBuilding);
 
-  // --- Cheminements pietons (footways / trottoirs) : rubans plats au sol ---
+  // --- Chaussees (routes) et cheminements pietons : rubans plats au sol ---
+  // Les routes sont plus larges et d'une couleur asphalte distincte ; les
+  // trottoirs/footways restent clairs et passent legerement au-dessus.
   const pathMat = new THREE.MeshStandardMaterial({
     color: th.path,
     roughness: 0.95,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+  const roadMat = new THREE.MeshStandardMaterial({
+    color: th.road,
+    roughness: 1,
     metalness: 0,
     side: THREE.DoubleSide,
   });
@@ -259,13 +395,54 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     if (path.kind === 'park') continue;
     const pts: [number, number][] = path.coords.map((p) => toLocal(p[0], p[1]));
     for (const [x, z] of pts) maxR = Math.max(maxR, Math.hypot(x, z));
-    const width = path.kind === 'sidewalk' ? 1.8 : 1.4;
+    const isRoad = path.kind === 'road';
+    const width = isRoad ? path.width ?? 5 : path.kind === 'sidewalk' ? 1.5 : 1.2;
     const geom = ribbon(pts, width);
     if (!geom) continue;
-    const mesh = new THREE.Mesh(geom, pathMat);
-    mesh.position.y = 0.06; // legerement au-dessus du sol (evite le z-fighting)
+    const mesh = new THREE.Mesh(geom, isRoad ? roadMat : pathMat);
+    mesh.position.y = isRoad ? 0.03 : 0.06; // trottoirs au-dessus de la chaussee
     mesh.receiveShadow = true;
     scene.add(mesh);
+  }
+
+  // --- Mobilier : bancs, arrets de bus, places PMR ---
+  const nb = payload.neighborhood;
+
+  for (const bench of nb.benches ?? []) {
+    const [x, z] = toLocal(bench.lng, bench.lat);
+    maxR = Math.max(maxR, Math.hypot(x, z));
+    scene.add(makeBench(x, z, bench.colour, bench.backrest !== false));
+  }
+
+  const busSignMat = new THREE.MeshStandardMaterial({ color: 0x2b6cb0, roughness: 0.5 });
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x394251, roughness: 0.6, metalness: 0.2 });
+  for (const stop of nb.busStops ?? []) {
+    const [x, z] = toLocal(stop.lng, stop.lat);
+    maxR = Math.max(maxR, Math.hypot(x, z));
+    scene.add(makeBusStop(x, z, poleMat, busSignMat));
+    const lines: string[] = [];
+    if (stop.name) lines.push(stop.name);
+    lines.push(stop.line ? `Ligne ${stop.line}` : 'Arrêt de bus');
+    const label = makeLabel(lines, { bg: 'rgba(23,58,102,0.92)', fg: '#eaf1fb', worldH: 1.5 });
+    label.position.set(x, 3.9, z);
+    scene.add(label);
+  }
+
+  for (const p of nb.parking ?? []) {
+    const [x, z] = toLocal(p.lng, p.lat);
+    maxR = Math.max(maxR, Math.hypot(x, z));
+    // Emplacement bleu marque au sol.
+    const stall = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.6, 5),
+      new THREE.MeshStandardMaterial({ color: 0x2f6fb0, roughness: 0.85 })
+    );
+    stall.rotation.x = -Math.PI / 2;
+    stall.position.set(x, 0.07, z);
+    stall.receiveShadow = true;
+    scene.add(stall);
+    const label = makeLabel(['\u267F PMR'], { bg: 'rgba(47,111,176,0.95)', fg: '#ffffff', worldH: 1.5 });
+    label.position.set(x, 2.2, z);
+    scene.add(label);
   }
 
   const radius = Math.min(Math.max(maxR * 1.9, 40), 400);

@@ -111,15 +111,45 @@ export function exitScene3D(): void {
 function sceneUiHtml(payload: ScenePayload): string {
   const nb = payload.neighborhood;
   const paths = nb.paths.filter((p) => p.kind !== 'park').length;
+  const extra: string[] = [];
+  if (nb.benches?.length) extra.push(`${nb.benches.length} banc(s)`);
+  if (nb.busStops?.length) extra.push(`${nb.busStops.length} arrêt(s) de bus`);
+  if (nb.parking?.length) extra.push(`${nb.parking.length} place(s) PMR`);
+  const extraLine = extra.length
+    ? `<span class="scene3d-sub">${extra.join(' &middot; ')}</span>`
+    : '';
   return `
     <div class="scene3d-bar">
       <div class="scene3d-info">
         <strong>${escapeHtml(payload.place.nom)}</strong>
         <span class="scene3d-sub">${nb.buildings.length} bâtiment(s) &middot; ${paths} cheminement(s) &middot; rayon 75 m</span>
+        ${extraLine}
         <span class="scene3d-sub">Glisser = se déplacer &middot; clic droit = pivoter &middot; molette = zoom &middot; flèches = se déplacer</span>
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
-    </div>`;
+    </div>
+    ${legendHtml(payload)}`;
+}
+
+/** Ebauche de legende 3D : rappelle le code couleur des objets de la scene. */
+function legendHtml(payload: ScenePayload): string {
+  const nb = payload.neighborhood;
+  const sw = (c: string): string => `<span class="lg-sw" style="background:${c}"></span>`;
+  const items: string[] = [
+    `<li>${sw('#ef8b4e')} Lieu visé (bâtiment / entrée)</li>`,
+    `<li>${sw('#c6c8cc')} Autres bâtiments</li>`,
+  ];
+  if (nb.paths.some((p) => p.kind === 'road')) items.push(`<li>${sw('#8b9098')} Routes</li>`);
+  if (nb.paths.some((p) => p.kind !== 'road' && p.kind !== 'park'))
+    items.push(`<li>${sw('#e7ecf3')} Trottoirs / cheminements</li>`);
+  if (nb.benches?.length) items.push(`<li>${sw('#9c6b3f')} Bancs</li>`);
+  if (nb.busStops?.length) items.push(`<li>${sw('#2b6cb0')} Arrêts de bus</li>`);
+  if (nb.parking?.length) items.push(`<li>${sw('#2f6fb0')} Places PMR</li>`);
+  return `
+    <details class="scene3d-legend" open>
+      <summary>Légende</summary>
+      <ul>${items.join('')}</ul>
+    </details>`;
 }
 
 function escapeHtml(s: string): string {
