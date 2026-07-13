@@ -51,17 +51,18 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      # Tuiles France entiere servies par le GitHub Pages du depot PUBLIC de
-      # donnees, sur la MEME origine (medialoco.github.io) que ce site : pas de
-      # CORS et requetes Range supportees (indispensable a PMTiles). Le navigateur
-      # lit cette URL a l'execution, donc un rafraichissement est reflete sans
-      # redeploiement de l'app.
-      - name: Point config to public France tiles (same-origin Pages)
+      # Jeu de points COMPACT (France entiere) servi par le GitHub Pages du depot
+      # PUBLIC de donnees, sur la MEME origine (medialoco.github.io) que ce site :
+      # pas de CORS. Le clustering est fait cote client (MapLibre), ce qui permet
+      # aux filtres d'accessibilite de recomposer les grappes instantanement. Le
+      # navigateur lit cette URL a l'execution : un rafraichissement hebdomadaire
+      # des donnees est reflete sans redeploiement de l'app.
+      - name: Point config to public France points (same-origin Pages)
         run: |
           cat > frontend/public/data/config.json <<'EOF'
           {
-            "mode": "pmtiles",
-            "source": "https://medialoco.github.io/accessibility-map-data/acceslibre.pmtiles",
+            "mode": "geojson",
+            "source": "https://medialoco.github.io/accessibility-map-data/acceslibre-points.json",
             "label": "Acceslibre (France)",
             "attribution": "&copy; <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\" rel=\"noopener\">OpenStreetMap</a> &middot; <a href=\"https://carto.com/attributions\" target=\"_blank\" rel=\"noopener\">CARTO</a> &middot; données <a href=\"https://acceslibre.beta.gouv.fr/\" target=\"_blank\" rel=\"noopener\">Acceslibre</a>"
           }
