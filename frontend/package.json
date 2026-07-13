@@ -1,0 +1,20 @@
+{
+  "name": "access-map-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Carte d'accessibilite (Acceslibre) - 2D MapLibre + vue accessible + pont vers la 3D Bevy/WASM.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "maplibre-gl": "^4.7.1",
+    "pmtiles": "^3.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

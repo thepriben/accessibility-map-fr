@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Carte d'accessibilité - France</title>
+    <meta
+      name="description"
+      content="Carte collaborative de l'accessibilité des lieux publics en France, à partir des données Acceslibre. Vue carte et vue liste accessible."
+    />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Aller au contenu principal</a>
+
+    <header class="app-header">
+      <h1 class="app-title">Carte d'accessibilité</h1>
+      <div class="view-switch" role="tablist" aria-label="Choix de la vue">
+        <button id="tab-map" role="tab" aria-selected="true" aria-controls="view-map" class="is-active">
+          Carte
+        </button>
+        <button id="tab-list" role="tab" aria-selected="false" aria-controls="view-list">
+          Liste accessible
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- Panneau de filtres par critere d'accessibilite -->
+      <aside id="filters" class="filters" aria-label="Filtres d'accessibilité"></aside>
+
+      <!-- Vue carte 2D -->
+      <section id="view-map" class="view view-map" role="tabpanel" aria-labelledby="tab-map">
+        <div id="map" class="map" role="application" aria-label="Carte des lieux accessibles"></div>
+        <!-- Canvas de la scene 3D (Bevy/WASM), superpose et masque par defaut -->
+        <canvas id="scene3d" class="scene3d" aria-hidden="true" tabindex="-1"></canvas>
+        <div id="scene3d-ui" class="scene3d-ui" hidden></div>
+      </section>
+
+      <!-- Vue liste accessible (RGAA/WCAG) -->
+      <section id="view-list" class="view view-list" role="tabpanel" aria-labelledby="tab-list" hidden>
+        <div id="list-container" class="list-container"></div>
+      </section>
+    </main>
+
+    <!-- Fiche détaillée d'un lieu (voisinage + imagerie de rue) -->
+    <aside id="place-panel" class="place-panel" aria-label="Fiche du lieu" hidden></aside>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

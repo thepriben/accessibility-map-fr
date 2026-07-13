@@ -1,0 +1,90 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- 3D : compilation du crate Bevy en WASM (non bloquant) ---
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/neighborhood3d/target
+          key: cargo-${{ hashFiles('crates/neighborhood3d/Cargo.toml') }}
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked || true
+      - name: Build WASM (Bevy)
+        id: wasm
+        continue-on-error: true
+        run: |
+          wasm-pack build crates/neighborhood3d --release --target web \
+            --out-dir ../../frontend/public/wasm --out-name neighborhood3d
+
+      # --- Frontend ---
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Point config to production tiles if available
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          URL="https://github.com/${{ github.repository }}/releases/download/data-latest/acceslibre.pmtiles"
+          if gh release view data-latest >/dev/null 2>&1; then
+            cat > frontend/public/data/config.json <<EOF
+          {
+            "mode": "pmtiles",
+            "source": "$URL",
+            "label": "Acceslibre (France)",
+            "attribution": "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> &middot; fond <a href=\"https://carto.com/attributions\">CARTO</a> &middot; données <a href=\"https://acceslibre.beta.gouv.fr/\">Acceslibre</a>"
+          }
+          EOF
+          fi
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+          VITE_MAPILLARY_TOKEN: ${{ secrets.VITE_MAPILLARY_TOKEN }}
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,20 @@
+{
+  "name": "access-map-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pipeline de recuperation/normalisation des donnees Acceslibre (build-time) vers GeoJSON + PMTiles.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "fetch:acceslibre": "node src/fetch-acceslibre.mjs",
+    "fetch:csv": "node src/fetch-csv.mjs",
+    "sample": "node src/make-sample.mjs",
+    "tiles": "node src/build-pmtiles.mjs",
+    "wikidata": "node src/wikidata-enrich.mjs"
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.6"
+  }
+}

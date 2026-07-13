@@ -1,0 +1,8 @@
+{
+  "mode": "geojson",
+  "source": "data/sample.geojson",
+  "generatedAt": "2026-07-13T05:32:57.371Z",
+  "label": "Échantillon Acceslibre (Paris)",
+  "count": 700,
+  "attribution": "Données <a href=\"https://acceslibre.beta.gouv.fr/\" target=\"_blank\" rel=\"noopener\">Acceslibre</a> (Étalab 2.0) &middot; fond <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\" rel=\"noopener\">OpenStreetMap</a>"
+}
