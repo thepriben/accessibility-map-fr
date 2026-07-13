@@ -145,10 +145,15 @@ async function fetchNeighborhoodRaw(
   radiusM: number
 ): Promise<NeighborhoodData> {
   const b = bbox(lng, lat, radiusM);
-  // Etape actuelle : on ne recupere QUE les batiments (rapide). Le mobilier,
-  // les POI et les cheminements seront reintroduits plus tard.
+  // Etape actuelle : batiments + cheminements pietons (footways / trottoirs).
+  // Le mobilier et les POI seront reintroduits plus tard.
   const query = `[out:json][timeout:25];
-    ( way["building"](${b}); );
+    (
+      way["building"](${b});
+      way["highway"="footway"](${b});
+      way["footway"="sidewalk"](${b});
+      way["highway"="pedestrian"](${b});
+    );
     out geom tags;`;
 
   const data = await overpassFetch(query);
@@ -200,7 +205,7 @@ async function fetchNeighborhoodRaw(
     if (el.type === 'way' && Array.isArray(el.geometry)) {
       let kind: OsmPath['kind'] | null = null;
       if (tags.footway === 'sidewalk') kind = 'sidewalk';
-      else if (tags.highway === 'footway') kind = 'footway';
+      else if (tags.highway === 'footway' || tags.highway === 'pedestrian') kind = 'footway';
       else if (tags.leisure === 'park') kind = 'park';
       if (kind) {
         out.paths.push({

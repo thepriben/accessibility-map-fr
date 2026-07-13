@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { MapControls } from 'three/addons/controls/MapControls.js';
 import type { NeighborhoodData, OsmBuilding } from '../data/overpass';
 
 export interface Scene3DPayload {
@@ -12,7 +12,7 @@ interface Ctx {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
-  controls: OrbitControls;
+  controls: MapControls;
   canvas: HTMLCanvasElement;
   raf: number;
   ro: ResizeObserver | null;
@@ -63,6 +63,7 @@ const COLOR_WIKIDATA = 0xd9b340;
 interface Theme {
   bg: number;
   ground: number;
+  path: number;
   ambient: number;
   ambientI: number;
   dir: number;
@@ -71,8 +72,46 @@ interface Theme {
 
 function themeColors(dark: boolean): Theme {
   return dark
-    ? { bg: 0x0c0f14, ground: 0x171a20, ambient: 0x8899bb, ambientI: 1.1, dir: 0xffffff, dirI: 1.6 }
-    : { bg: 0xdfe6ee, ground: 0x9e988c, ambient: 0xffffff, ambientI: 1.5, dir: 0xffffff, dirI: 1.9 };
+    ? { bg: 0x0c0f14, ground: 0x171a20, path: 0x5b6b86, ambient: 0x8899bb, ambientI: 1.1, dir: 0xffffff, dirI: 1.6 }
+    : { bg: 0xdfe6ee, ground: 0x9e988c, path: 0xdfe3ea, ambient: 0xffffff, ambientI: 1.5, dir: 0xffffff, dirI: 1.9 };
+}
+
+/** Construit un ruban plat (cheminement) le long d'une polyligne locale. */
+function ribbon(points: [number, number][], width: number): THREE.BufferGeometry | null {
+  if (points.length < 2) return null;
+  const pos: number[] = [];
+  const idx: number[] = [];
+  const hw = width / 2;
+  const left: [number, number][] = [];
+  const right: [number, number][] = [];
+  for (let i = 0; i < points.length; i += 1) {
+    const [x, z] = points[i];
+    const prev = points[Math.max(i - 1, 0)];
+    const next = points[Math.min(i + 1, points.length - 1)];
+    let dx = next[0] - prev[0];
+    let dz = next[1] - prev[1];
+    const len = Math.hypot(dx, dz) || 1;
+    dx /= len;
+    dz /= len;
+    // Normale horizontale (perpendiculaire a la direction).
+    const nx = -dz;
+    const nz = dx;
+    left.push([x + nx * hw, z + nz * hw]);
+    right.push([x - nx * hw, z - nz * hw]);
+  }
+  for (let i = 0; i < points.length; i += 1) {
+    pos.push(left[i][0], 0, left[i][1]);
+    pos.push(right[i][0], 0, right[i][1]);
+  }
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = i * 2;
+    idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geom.setIndex(idx);
+  geom.computeVertexNormals();
+  return geom;
 }
 
 /** Construit (ou reconstruit) la scene Three.js dans le canvas fourni. */
@@ -119,6 +158,20 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     scene.add(mesh);
   }
 
+  // --- Cheminements pietons (footways / trottoirs) : rubans plats au sol ---
+  const pathMat = new THREE.MeshLambertMaterial({ color: th.path, side: THREE.DoubleSide });
+  for (const path of payload.neighborhood.paths) {
+    if (path.kind === 'park') continue;
+    const pts: [number, number][] = path.coords.map((p) => toLocal(p[0], p[1]));
+    for (const [x, z] of pts) maxR = Math.max(maxR, Math.hypot(x, z));
+    const width = path.kind === 'sidewalk' ? 1.8 : 1.4;
+    const geom = ribbon(pts, width);
+    if (!geom) continue;
+    const mesh = new THREE.Mesh(geom, pathMat);
+    mesh.position.y = 0.06; // legerement au-dessus du sol (evite le z-fighting)
+    scene.add(mesh);
+  }
+
   // --- Lumieres (sobres) ---
   scene.add(new THREE.AmbientLight(th.ambient, th.ambientI));
   const dir = new THREE.DirectionalLight(th.dir, th.dirI);
@@ -138,16 +191,19 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(w, h, false);
 
-  const controls = new OrbitControls(camera, renderer.domElement);
+  // MapControls : navigation "type carte" (glisser = deplacer, clic droit =
+  // pivoter, molette = zoom), plus intuitive pour explorer un voisinage.
+  const controls = new MapControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.screenSpacePanning = false;
   controls.maxPolarAngle = Math.PI / 2.05;
-  controls.minDistance = 8;
+  controls.minDistance = 6;
   controls.maxDistance = radius * 3;
-  controls.target.set(0, Math.min(radius * 0.15, 8), 0);
+  controls.zoomSpeed = 1.1;
+  controls.target.set(0, 0, 0);
   controls.listenToKeyEvents(window);
-  controls.keyPanSpeed = 14;
+  controls.keyPanSpeed = 16;
   controls.update();
 
   const c: Ctx = { renderer, scene, camera, controls, canvas, raf: 0, ro: null };

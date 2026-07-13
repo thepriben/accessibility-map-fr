@@ -103,12 +103,13 @@ export function exitScene3D(): void {
 
 function sceneUiHtml(payload: ScenePayload): string {
   const nb = payload.neighborhood;
+  const paths = nb.paths.filter((p) => p.kind !== 'park').length;
   return `
     <div class="scene3d-bar">
       <div class="scene3d-info">
         <strong>${escapeHtml(payload.place.nom)}</strong>
-        <span class="scene3d-sub">${nb.buildings.length} bâtiment(s) &middot; rayon 25 m</span>
-        <span class="scene3d-sub">Souris : glisser = pivoter, clic droit = se déplacer, molette = zoom &middot; flèches = se déplacer</span>
+        <span class="scene3d-sub">${nb.buildings.length} bâtiment(s) &middot; ${paths} cheminement(s) &middot; rayon 25 m</span>
+        <span class="scene3d-sub">Glisser = se déplacer &middot; clic droit = pivoter &middot; molette = zoom &middot; flèches = se déplacer</span>
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
     </div>`;
