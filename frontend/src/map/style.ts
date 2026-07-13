@@ -5,7 +5,8 @@ import { BASEMAP_TILES, MAP_ATTRIBUTION } from '../config';
 export function baseStyle(): StyleSpecification {
   return {
     version: 8,
-    glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+    // Serveur de glyphes fiable (le demo maplibre n'a pas "Open Sans Regular").
+    glyphs: 'https://fonts.openmaptiles.org/{fontstack}/{range}.pbf',
     sources: {
       basemap: {
         type: 'raster',

@@ -86,8 +86,16 @@ function addClusterLayers(map: MlMap, sourceLayer?: string): void {
     ...src,
     filter: hasCount,
     layout: {
-      'text-field': ['get', 'point_count_abbreviated'],
-      'text-font': ['Open Sans Regular'],
+      // tippecanoe fournit `point_count` (pas `point_count_abbreviated`).
+      // On abrege les gros compteurs (>= 1000) en "Nk".
+      'text-field': [
+        'step',
+        ['get', 'point_count'],
+        ['to-string', ['get', 'point_count']],
+        1000,
+        ['concat', ['to-string', ['round', ['/', ['get', 'point_count'], 1000]]], 'k'],
+      ],
+      'text-font': ['Noto Sans Regular'],
       'text-size': 12,
     },
     paint: { 'text-color': '#ffffff' },
