@@ -1,5 +1,3 @@
-import { a11ySummary } from '../a11y';
-import { asset } from '../config';
 import type { NeighborhoodData } from '../data/overpass';
 import { getTheme } from '../theme';
 import type { Place, StreetPhoto } from '../types';
@@ -8,57 +6,49 @@ export interface ScenePayload {
   place: { nom: string; lng: number; lat: number; activite?: string; a11y?: string };
   neighborhood: NeighborhoodData;
   photos: StreetPhoto[];
-  /** Thème de rendu ('light' | 'dark'), consommé par la scène Bevy. */
+  /** Thème de rendu ('light' | 'dark'). */
   theme?: string;
-}
-
-interface WasmModule {
-  default: (input?: unknown) => Promise<unknown>;
-  start_neighborhood: (canvasId: string, payloadJson: string) => void;
-  stop_neighborhood?: () => void;
-}
-
-let wasm: WasmModule | null = null;
-let loading: Promise<WasmModule | null> | null = null;
-
-/** Charge (une fois) le module WASM Bevy genere par wasm-bindgen/wasm-pack. */
-async function loadWasm(): Promise<WasmModule | null> {
-  if (wasm) return wasm;
-  if (loading) return loading;
-  loading = (async () => {
-    try {
-      const url = asset('wasm/neighborhood3d.js');
-      const mod = (await import(/* @vite-ignore */ url)) as unknown as WasmModule;
-      await mod.default(asset('wasm/neighborhood3d_bg.wasm'));
-      wasm = mod;
-      return mod;
-    } catch (err) {
-      console.warn('Module 3D indisponible (build WASM absent ?)', err);
-      return null;
-    }
-  })();
-  return loading;
 }
 
 const CANVAS_ID = 'scene3d';
 
-/** Précharge (sans attendre) le module WASM pour une bascule 3D quasi instantanée. */
-export function prefetchScene3D(): void {
-  void loadWasm();
+// Chargement paresseux du module Three.js (chunk separe) : la page reste legere
+// et la 3D n'est telechargee qu'a la premiere utilisation.
+type SceneMod = typeof import('../three/scene3d');
+let sceneMod: SceneMod | null = null;
+let loading: Promise<SceneMod | null> | null = null;
+
+async function loadScene(): Promise<SceneMod | null> {
+  if (sceneMod) return sceneMod;
+  if (loading) return loading;
+  loading = import('../three/scene3d')
+    .then((m) => {
+      sceneMod = m;
+      return m;
+    })
+    .catch((err) => {
+      console.warn('Module 3D (Three.js) indisponible', err);
+      return null;
+    });
+  return loading;
 }
 
-/**
- * Bascule sur la vue 3D : fondu du canvas Bevy par-dessus la carte, puis
- * lancement de la scene ECS avec les donnees du voisinage. Retourne false si
- * le module WASM n'est pas disponible (fallback : on reste en 2D).
- */
+/** Précharge (sans attendre) le module 3D pour une bascule quasi instantanée. */
+export function prefetchScene3D(): void {
+  void loadScene();
+}
+
 let lastPayload: ScenePayload | null = null;
 
+/**
+ * Bascule sur la vue 3D (Three.js) : affiche le canvas par-dessus la carte et
+ * construit la scene (batiments du voisinage). Retourne false si le module 3D
+ * n'a pas pu se charger (fallback : on reste en 2D).
+ */
 export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
-  const mod = await loadWasm();
   const canvas = document.getElementById(CANVAS_ID) as HTMLCanvasElement | null;
   const ui = document.getElementById('scene3d-ui');
-  if (!mod || !canvas) return false;
+  if (!canvas) return false;
 
   payload.theme = getTheme();
   lastPayload = payload;
@@ -72,36 +62,25 @@ export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
   }
 
   try {
-    mod.start_neighborhood(CANVAS_ID, JSON.stringify(payload));
+    const mod = await loadScene();
+    if (!mod) {
+      exitScene3D();
+      return false;
+    }
+    mod.startScene3D(canvas, payload);
     return true;
   } catch (err) {
-    // winit/Bevy sur wasm "sort" de sa boucle run() en levant une exception de
-    // controle de flux (la scene continue ensuite via requestAnimationFrame).
-    // Ce n'est PAS une erreur : sans ce filtre, on fermait la 3D a tort.
-    if (isControlFlowSignal(err)) return true;
     console.error('Echec du lancement de la scene 3D', err);
     exitScene3D();
     return false;
   }
 }
 
-/** Vrai si l'exception est le signal de controle de flux winit (benin). */
-function isControlFlowSignal(err: unknown): boolean {
-  const msg =
-    typeof err === 'string' ? err : ((err as { message?: string } | null)?.message ?? '');
-  return /control flow|isn't actually an error/i.test(msg);
-}
-
-/** Resynchronise le thème de la scène 3D si elle est affichée (relance légère). */
+/** Resynchronise le thème de la scène 3D si elle est affichée. */
 export function refreshScene3DTheme(): void {
-  if (!wasm || !isScene3DActive() || !lastPayload) return;
-  try {
-    lastPayload.theme = getTheme();
-    wasm.stop_neighborhood?.();
-    wasm.start_neighborhood(CANVAS_ID, JSON.stringify(lastPayload));
-  } catch (err) {
-    console.warn('Resynchronisation du thème 3D impossible', err);
-  }
+  if (!sceneMod || !isScene3DActive() || !lastPayload) return;
+  lastPayload.theme = getTheme();
+  sceneMod.updateTheme(getTheme() === 'dark');
 }
 
 /** Vrai si la scene 3D est actuellement affichee. */
@@ -119,7 +98,7 @@ export function exitScene3D(): void {
     ui.innerHTML = '';
   }
   lastPayload = null;
-  wasm?.stop_neighborhood?.();
+  sceneMod?.stopScene3D();
 }
 
 function sceneUiHtml(payload: ScenePayload): string {
@@ -129,8 +108,7 @@ function sceneUiHtml(payload: ScenePayload): string {
       <div class="scene3d-info">
         <strong>${escapeHtml(payload.place.nom)}</strong>
         <span class="scene3d-sub">${nb.buildings.length} bâtiment(s) &middot; rayon 25 m</span>
-        <span class="scene3d-sub">Souris : glisser = pivoter, clic droit = se déplacer, molette = zoom &middot;
-          Clavier : flèches/ZQSD = se déplacer, A/E = pivoter, +/- = zoom</span>
+        <span class="scene3d-sub">Souris : glisser = pivoter, clic droit = se déplacer, molette = zoom &middot; flèches = se déplacer</span>
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
     </div>`;
@@ -154,7 +132,6 @@ export function buildScenePayload(
       lng: place.lng,
       lat: place.lat,
       activite: place.properties.activite ?? undefined,
-      a11y: a11ySummary(place.properties),
     },
     neighborhood,
     photos,
