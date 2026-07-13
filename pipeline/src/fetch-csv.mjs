@@ -18,7 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATASET_API = 'https://www.data.gouv.fr/api/1/datasets/acceslibre/';
 
 /** Resout l'URL du CSV `acceslibre.csv` (datee) via l'API data.gouv. */
-async function resolveCsvUrl() {
+export async function resolveCsvUrl() {
   const res = await fetch(DATASET_API);
   if (!res.ok) throw new Error(`data.gouv HTTP ${res.status}`);
   const data = await res.json();
@@ -65,7 +65,7 @@ function normalizeCoords(lon, lat) {
 }
 
 /** Ligne CSV plate -> proprietes normalisees (memes cles que la version API). */
-function rowToFeature(row) {
+export function rowToFeature(row) {
   const rawLon = parseFloat(row.longitude);
   const rawLat = parseFloat(row.latitude);
   if (!Number.isFinite(rawLon) || !Number.isFinite(rawLat)) return null;
@@ -168,7 +168,11 @@ async function main() {
   process.stderr.write(`\nEcrit ${kept} features (sur ${total} lignes) -> ${out}\n`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// N'execute le pipeline complet que si le script est invoque directement
+// (permet a build-places-geojson.mjs de reutiliser resolveCsvUrl/rowToFeature).
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

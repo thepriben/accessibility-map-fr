@@ -95,7 +95,7 @@ export function addGeoJsonClusters(map: MlMap, data: GeoJSON.FeatureCollection):
     type: 'geojson',
     data,
     cluster: true,
-    clusterMaxZoom: 14,
+    clusterMaxZoom: 16,
     clusterRadius: 50,
   });
   addClusterLayers(map);
@@ -128,7 +128,8 @@ function addClusterLayers(map: MlMap, sourceLayer?: string): void {
     paint: {
       'circle-color': clusterColor,
       'circle-radius': clusterRadius,
-      'circle-opacity': 0.85,
+      // Grappes pleines (pas d'opacite), comme demande.
+      'circle-opacity': 1,
       'circle-stroke-width': 2,
       'circle-stroke-color': '#ffffff',
     },

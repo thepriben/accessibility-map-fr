@@ -40,12 +40,12 @@ const args = [
   'Acceslibre',
   '--attribution',
   'Acceslibre (Etalab 2.0)',
-  // Individuel a fort zoom, grappes agregees aux zooms bas.
-  '-zg',
+  // Grappes agregees aux zooms bas, declustering complet au zoom rue (-z 16).
   '-Z',
   '3',
-  '--cluster-distance=12',
-  '--cluster-densest-as-needed',
+  '-z',
+  '16',
+  '--cluster-distance=45',
   '--accumulate-attribute=point_count:sum',
   '--drop-densest-as-needed',
   '--extend-zooms-if-still-dropping',
