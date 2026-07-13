@@ -1,11 +1,14 @@
 import { asset } from '../config';
 import type { NeighborhoodData } from '../data/overpass';
+import { getTheme } from '../theme';
 import type { Place, StreetPhoto } from '../types';
 
 export interface ScenePayload {
   place: { nom: string; lng: number; lat: number };
   neighborhood: NeighborhoodData;
   photos: StreetPhoto[];
+  /** Thème de rendu ('light' | 'dark'), consommé par la scène Bevy. */
+  theme?: string;
 }
 
 interface WasmModule {
@@ -43,11 +46,16 @@ const CANVAS_ID = 'scene3d';
  * lancement de la scene ECS avec les donnees du voisinage. Retourne false si
  * le module WASM n'est pas disponible (fallback : on reste en 2D).
  */
+let lastPayload: ScenePayload | null = null;
+
 export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
   const mod = await loadWasm();
   const canvas = document.getElementById(CANVAS_ID) as HTMLCanvasElement | null;
   const ui = document.getElementById('scene3d-ui');
   if (!mod || !canvas) return false;
+
+  payload.theme = getTheme();
+  lastPayload = payload;
 
   canvas.setAttribute('aria-hidden', 'false');
   canvas.classList.add('is-visible');
@@ -67,6 +75,18 @@ export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
   }
 }
 
+/** Resynchronise le thème de la scène 3D si elle est affichée (relance légère). */
+export function refreshScene3DTheme(): void {
+  if (!wasm || !isScene3DActive() || !lastPayload) return;
+  try {
+    lastPayload.theme = getTheme();
+    wasm.stop_neighborhood?.();
+    wasm.start_neighborhood(CANVAS_ID, JSON.stringify(lastPayload));
+  } catch (err) {
+    console.warn('Resynchronisation du thème 3D impossible', err);
+  }
+}
+
 /** Vrai si la scene 3D est actuellement affichee. */
 export function isScene3DActive(): boolean {
   return document.getElementById(CANVAS_ID)?.classList.contains('is-visible') ?? false;
@@ -81,6 +101,7 @@ export function exitScene3D(): void {
     ui.hidden = true;
     ui.innerHTML = '';
   }
+  lastPayload = null;
   wasm?.stop_neighborhood?.();
 }
 

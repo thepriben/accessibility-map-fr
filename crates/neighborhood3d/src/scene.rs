@@ -26,20 +26,41 @@ pub fn setup(
 ) {
     let payload = &input.0;
     let origin = Origin::new(payload.place.lng, payload.place.lat);
+    let dark = payload.is_dark();
 
-    // Materiaux reutilisables (palette sobre).
+    // Couleur de fond selon le theme (accord avec --scene-bg cote CSS).
+    commands.insert_resource(ClearColor(if dark {
+        Color::srgb(0.047, 0.059, 0.078)
+    } else {
+        Color::srgb(0.874, 0.902, 0.933)
+    }));
+
+    // Materiaux reutilisables (palette sobre, dependante du theme).
+    let (building_a, building_b, ground_c) = if dark {
+        (
+            Color::srgb(0.22, 0.24, 0.28),
+            Color::srgb(0.26, 0.30, 0.38),
+            Color::srgb(0.10, 0.11, 0.13),
+        )
+    } else {
+        (
+            Color::srgb(0.80, 0.81, 0.84),
+            Color::srgb(0.72, 0.78, 0.86),
+            Color::srgb(0.55, 0.58, 0.62),
+        )
+    };
     let mat_building = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.80, 0.81, 0.84),
+        base_color: building_a,
         perceptual_roughness: 0.95,
         ..default()
     });
     let mat_building_wd = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.72, 0.78, 0.86),
+        base_color: building_b,
         perceptual_roughness: 0.9,
         ..default()
     });
     let mat_ground = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.16, 0.19, 0.24),
+        base_color: ground_c,
         perceptual_roughness: 1.0,
         ..default()
     });
@@ -204,12 +225,16 @@ pub fn setup(
 
     // --- Eclairage (sobre, sans ombres pour la perf WASM) ---
     commands.insert_resource(AmbientLight {
-        color: Color::srgb(0.85, 0.88, 0.95),
-        brightness: 380.0,
+        color: if dark {
+            Color::srgb(0.45, 0.5, 0.62)
+        } else {
+            Color::srgb(0.85, 0.88, 0.95)
+        },
+        brightness: if dark { 220.0 } else { 380.0 },
     });
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {
-            illuminance: 9000.0,
+            illuminance: if dark { 5500.0 } else { 9000.0 },
             shadows_enabled: false,
             ..default()
         },

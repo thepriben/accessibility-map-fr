@@ -8,6 +8,15 @@ pub struct ScenePayload {
     pub neighborhood: Neighborhood,
     #[serde(default)]
     pub photos: Vec<StreetPhoto>,
+    /// Thème de rendu : "dark" ou "light" (défaut light).
+    #[serde(default)]
+    pub theme: Option<String>,
+}
+
+impl ScenePayload {
+    pub fn is_dark(&self) -> bool {
+        self.theme.as_deref() == Some("dark")
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

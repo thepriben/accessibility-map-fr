@@ -9,7 +9,8 @@ import {
   nearestPlaceToCenter,
 } from './map/mapView';
 import { autoEnter3D, closePlacePanel, openPlacePanel } from './neighborhood/placePanel';
-import { exitScene3D, isScene3DActive } from './transition/transition';
+import { exitScene3D, isScene3DActive, refreshScene3DTheme } from './transition/transition';
+import { initTheme, onThemeChange } from './theme';
 import { state } from './state';
 import type { Place } from './types';
 
@@ -130,5 +131,7 @@ async function boot(): Promise<void> {
   }
 }
 
+initTheme();
+onThemeChange(() => refreshScene3DTheme());
 setupTabs();
 void boot();

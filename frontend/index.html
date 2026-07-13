@@ -15,13 +15,16 @@
 
     <header class="app-header">
       <h1 class="app-title">Carte d'accessibilité</h1>
-      <div class="view-switch" role="tablist" aria-label="Choix de la vue">
-        <button id="tab-map" role="tab" aria-selected="true" aria-controls="view-map" class="is-active">
-          Carte
-        </button>
-        <button id="tab-list" role="tab" aria-selected="false" aria-controls="view-list">
-          Liste accessible
-        </button>
+      <div class="header-actions">
+        <div class="view-switch" role="tablist" aria-label="Choix de la vue">
+          <button id="tab-map" role="tab" aria-selected="true" aria-controls="view-map" class="is-active">
+            Carte
+          </button>
+          <button id="tab-list" role="tab" aria-selected="false" aria-controls="view-list">
+            Liste accessible
+          </button>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Basculer le thème clair/sombre" aria-pressed="false" title="Thème clair/sombre">🌙</button>
       </div>
     </header>
 
