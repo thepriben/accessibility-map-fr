@@ -36,3 +36,15 @@ pub struct PhotoTag {
     pub id: String,
     pub provider: String,
 }
+
+/// Lieu d'accueil (hotel, restaurant, cafe, communautaire, cultuel).
+#[derive(Component, Debug, Clone)]
+pub struct PoiTag {
+    pub id: String,
+    pub kind: String,
+    pub name: Option<String>,
+}
+
+/// Sprite "billboard" facon Doom : toujours oriente face a la camera (yaw).
+#[derive(Component, Debug, Clone, Default)]
+pub struct Billboard;

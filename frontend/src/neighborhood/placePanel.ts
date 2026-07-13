@@ -121,10 +121,26 @@ function renderNeighborhoodSummary(panel: HTMLElement, nb: NeighborhoodData | nu
     fountain: 'fontaines',
     tree: 'arbres',
     crossing: 'passages piétons',
+    bollard: 'bornes/obstacles',
+    lamp: 'lampadaires',
+    drinking_water: "points d'eau",
+    waste: 'corbeilles',
   };
+  const poiLabels: Record<string, string> = {
+    hotel: 'hôtels',
+    restaurant: 'restaurants',
+    cafe: 'cafés/bars',
+    community: 'lieux communautaires',
+    worship: 'lieux cultuels',
+  };
+  const byPoi = (nb.pois || []).reduce<Record<string, number>>((acc, p) => {
+    acc[p.kind] = (acc[p.kind] || 0) + 1;
+    return acc;
+  }, {});
   const chips = [
     `${nb.buildings.length} bâtiments`,
     ...Object.entries(byKind).map(([k, n]) => `${n} ${labels[k] || k}`),
+    ...Object.entries(byPoi).map(([k, n]) => `${n} ${poiLabels[k] || k}`),
     `${nb.paths.length} cheminements/parcs`,
   ]
     .map((t) => `<span class="chip">${esc(t)}</span>`)

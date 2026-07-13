@@ -35,6 +35,8 @@ pub struct Neighborhood {
     #[serde(default)]
     pub furniture: Vec<Furniture>,
     #[serde(default)]
+    pub pois: Vec<Poi>,
+    #[serde(default)]
     pub paths: Vec<Path>,
 }
 
@@ -67,6 +69,18 @@ pub struct Furniture {
     pub kind: String,
     pub lng: f64,
     pub lat: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct Poi {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    pub lng: f64,
+    pub lat: f64,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

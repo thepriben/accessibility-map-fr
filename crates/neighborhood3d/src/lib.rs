@@ -13,7 +13,7 @@ mod scene;
 
 use bevy::prelude::*;
 use bevy::window::WindowPlugin;
-use camera::{orbit, OrbitCamera};
+use camera::{billboard, orbit, OrbitCamera};
 use data::ScenePayload;
 use scene::{setup, SceneInput};
 use wasm_bindgen::prelude::*;
@@ -52,6 +52,6 @@ pub fn start_neighborhood(canvas_id: String, payload_json: String) {
     .insert_resource(OrbitCamera::default())
     .insert_resource(SceneInput(payload))
     .add_systems(Startup, setup)
-    .add_systems(Update, orbit)
+    .add_systems(Update, (orbit, billboard))
     .run();
 }

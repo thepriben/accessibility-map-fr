@@ -113,7 +113,8 @@ function sceneUiHtml(payload: ScenePayload): string {
         <strong>${escapeHtml(payload.place.nom)}</strong>
         <span class="scene3d-sub">Vue 3D des 30 derniers mètres &middot;
           ${nb.buildings.length} bâtiments, ${nb.furniture.length} mobiliers,
-          ${payload.photos.length} photos</span>
+          ${nb.pois.length} lieux d'accueil, ${payload.photos.length} photos &middot;
+          souris : glisser = pivoter, clic droit = se déplacer, molette = zoom</span>
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
     </div>`;

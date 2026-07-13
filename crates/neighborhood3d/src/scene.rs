@@ -18,6 +18,25 @@ fn building_height(height: Option<f64>, levels: Option<f64>) -> f32 {
         .clamp(3.0, 200.0) as f32
 }
 
+/// Materiau plat "Doom" : couleur franche, sans eclairage (unlit).
+fn flat(materials: &mut Assets<StandardMaterial>, r: f32, g: f32, b: f32) -> Handle<StandardMaterial> {
+    materials.add(StandardMaterial {
+        base_color: Color::srgb(r, g, b),
+        unlit: true,
+        ..default()
+    })
+}
+
+/// Petit hash stable pour varier les couleurs des murs par batiment.
+fn hash_id(s: &str) -> u32 {
+    let mut h: u32 = 2166136261;
+    for byte in s.bytes() {
+        h ^= byte as u32;
+        h = h.wrapping_mul(16777619);
+    }
+    h
+}
+
 pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -35,66 +54,84 @@ pub fn setup(
         Color::srgb(0.874, 0.902, 0.933)
     }));
 
-    // Materiaux reutilisables (palette sobre, dependante du theme).
-    let (building_a, building_b, ground_c) = if dark {
-        (
-            Color::srgb(0.22, 0.24, 0.28),
-            Color::srgb(0.26, 0.30, 0.38),
-            Color::srgb(0.10, 0.11, 0.13),
-        )
-    } else {
-        (
-            Color::srgb(0.80, 0.81, 0.84),
-            Color::srgb(0.72, 0.78, 0.86),
-            Color::srgb(0.55, 0.58, 0.62),
-        )
-    };
-    let mat_building = materials.add(StandardMaterial {
-        base_color: building_a,
-        perceptual_roughness: 0.95,
-        ..default()
-    });
-    let mat_building_wd = materials.add(StandardMaterial {
-        base_color: building_b,
-        perceptual_roughness: 0.9,
-        ..default()
-    });
-    let mat_ground = materials.add(StandardMaterial {
-        base_color: ground_c,
-        perceptual_roughness: 1.0,
-        ..default()
-    });
-    let mat_place = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.18, 0.62, 0.36),
-        emissive: LinearRgba::rgb(0.05, 0.25, 0.12),
-        ..default()
-    });
-    let mat_bench = materials.add(Color::srgb(0.55, 0.38, 0.22));
-    let mat_bus = materials.add(Color::srgb(0.20, 0.42, 0.78));
-    let mat_fountain = materials.add(Color::srgb(0.30, 0.55, 0.80));
-    let mat_tree = materials.add(Color::srgb(0.22, 0.5, 0.26));
-    let mat_crossing = materials.add(Color::srgb(0.9, 0.9, 0.92));
-    let mat_path = materials.add(Color::srgb(0.4, 0.42, 0.46));
-    let mat_park = materials.add(Color::srgb(0.24, 0.44, 0.28));
-    let mat_mapillary = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.18, 0.62, 0.34),
-        ..default()
-    });
-    let mat_panoramax = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.82, 0.85, 0.90),
-        ..default()
-    });
+    // Palette "Doom" : materiaux plats (unlit), couleurs franches.
+    let ground_c = if dark { (0.09, 0.10, 0.12) } else { (0.62, 0.60, 0.55) };
+    let mat_ground = flat(&mut materials, ground_c.0, ground_c.1, ground_c.2);
+    let grid_c = if dark { (0.18, 0.20, 0.24) } else { (0.72, 0.70, 0.64) };
+    let mat_grid = flat(&mut materials, grid_c.0, grid_c.1, grid_c.2);
 
-    // Meshes de base reutilisables.
+    // Murs de batiments : teintes retro variees + surbrillance pour Wikidata.
+    let wall_palette: Vec<Handle<StandardMaterial>> = [
+        (0.62, 0.36, 0.30),
+        (0.55, 0.47, 0.30),
+        (0.40, 0.45, 0.55),
+        (0.48, 0.40, 0.52),
+        (0.35, 0.52, 0.50),
+        (0.60, 0.55, 0.45),
+    ]
+    .iter()
+    .map(|(r, g, b)| flat(&mut materials, *r, *g, *b))
+    .collect();
+    let mat_building_wd = flat(&mut materials, 0.85, 0.70, 0.25);
+
+    let mat_place = flat(&mut materials, 0.83, 0.66, 0.33);
+    let mat_bench = flat(&mut materials, 0.62, 0.40, 0.22);
+    let mat_bus = flat(&mut materials, 0.20, 0.45, 0.85);
+    let mat_fountain = flat(&mut materials, 0.25, 0.60, 0.85);
+    let mat_tree = flat(&mut materials, 0.24, 0.55, 0.28);
+    let mat_crossing = flat(&mut materials, 0.92, 0.92, 0.94);
+    let mat_bollard = flat(&mut materials, 0.85, 0.30, 0.25);
+    let mat_lamp = flat(&mut materials, 0.90, 0.82, 0.45);
+    let mat_water = flat(&mut materials, 0.20, 0.70, 0.85);
+    let mat_waste = flat(&mut materials, 0.45, 0.45, 0.48);
+    let mat_path = flat(&mut materials, 0.42, 0.44, 0.48);
+    let mat_park = flat(&mut materials, 0.24, 0.46, 0.28);
+    let mat_mapillary = flat(&mut materials, 0.18, 0.70, 0.38);
+    let mat_panoramax = flat(&mut materials, 0.85, 0.85, 0.90);
+
+    // POI d'accueil : couleurs franches distinctes.
+    let mat_hotel = flat(&mut materials, 0.55, 0.35, 0.75);
+    let mat_restaurant = flat(&mut materials, 0.88, 0.30, 0.30);
+    let mat_cafe = flat(&mut materials, 0.80, 0.55, 0.25);
+    let mat_community = flat(&mut materials, 0.20, 0.65, 0.62);
+    let mat_worship = flat(&mut materials, 0.45, 0.50, 0.85);
+
+    // Meshes de base reutilisables : cube (volumes) + quad (billboards).
     let unit_cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+    let quad = meshes.add(Rectangle::new(1.0, 1.0));
 
-    // --- Sol ---
+    // --- Sol + grille retro ---
     commands.spawn(PbrBundle {
         mesh: meshes.add(Cuboid::new(400.0, 0.1, 400.0)),
         material: mat_ground.clone(),
         transform: Transform::from_xyz(0.0, -0.06, 0.0),
         ..default()
     });
+    let span = 120.0_f32;
+    let mut g = -span;
+    while g <= span {
+        commands.spawn(PbrBundle {
+            mesh: unit_cube.clone(),
+            material: mat_grid.clone(),
+            transform: Transform {
+                translation: Vec3::new(0.0, 0.0, g),
+                scale: Vec3::new(span * 2.0, 0.04, 0.15),
+                ..default()
+            },
+            ..default()
+        });
+        commands.spawn(PbrBundle {
+            mesh: unit_cube.clone(),
+            material: mat_grid.clone(),
+            transform: Transform {
+                translation: Vec3::new(g, 0.0, 0.0),
+                scale: Vec3::new(0.15, 0.04, span * 2.0),
+                ..default()
+            },
+            ..default()
+        });
+        g += 10.0;
+    }
 
     // --- Batiments extrudes ---
     for b in &payload.neighborhood.buildings {
@@ -106,7 +143,7 @@ pub fn setup(
         let mat = if b.wikidata.is_some() {
             mat_building_wd.clone()
         } else {
-            mat_building.clone()
+            wall_palette[(hash_id(&b.id) as usize) % wall_palette.len()].clone()
         };
         commands.spawn((
             PbrBundle {
@@ -157,38 +194,82 @@ pub fn setup(
         }
     }
 
-    // --- Mobilier urbain (30 derniers metres) ---
+    // --- Mobilier / obstacles / points d'eau (billboards facon Doom) ---
     for f in &payload.neighborhood.furniture {
         let (x, z) = origin.to_local(f.lng, f.lat);
-        let (mat, scale, y, mesh) = match f.kind.as_str() {
-            "bench" => (mat_bench.clone(), Vec3::new(1.6, 0.5, 0.5), 0.25, unit_cube.clone()),
-            "bus_stop" => (mat_bus.clone(), Vec3::new(0.25, 3.0, 0.25), 1.5, unit_cube.clone()),
-            "fountain" => (
-                mat_fountain.clone(),
-                Vec3::ONE,
-                0.4,
-                meshes.add(Cylinder::new(0.8, 0.8)),
-            ),
-            "tree" => (mat_tree.clone(), Vec3::ONE, 2.0, meshes.add(Sphere::new(1.6))),
-            "crossing" => (mat_crossing.clone(), Vec3::new(2.0, 0.05, 3.0), 0.03, unit_cube.clone()),
-            _ => (mat_path.clone(), Vec3::splat(0.6), 0.3, unit_cube.clone()),
+        // Passage pieton : marquage au sol (pas un billboard).
+        if f.kind == "crossing" {
+            commands.spawn((
+                PbrBundle {
+                    mesh: unit_cube.clone(),
+                    material: mat_crossing.clone(),
+                    transform: Transform {
+                        translation: Vec3::new(x, 0.04, z),
+                        scale: Vec3::new(2.0, 0.08, 3.0),
+                        ..default()
+                    },
+                    ..default()
+                },
+                FurnitureTag { id: f.id.clone(), kind: f.kind.clone() },
+            ));
+            continue;
+        }
+        let (mat, w, h) = match f.kind.as_str() {
+            "bench" => (mat_bench.clone(), 1.8, 0.9),
+            "bus_stop" => (mat_bus.clone(), 1.6, 3.0),
+            "fountain" => (mat_fountain.clone(), 1.6, 1.4),
+            "tree" => (mat_tree.clone(), 3.2, 5.0),
+            "bollard" => (mat_bollard.clone(), 0.4, 1.0),
+            "lamp" => (mat_lamp.clone(), 0.5, 4.5),
+            "drinking_water" => (mat_water.clone(), 0.7, 1.2),
+            "waste" => (mat_waste.clone(), 0.7, 1.0),
+            _ => (mat_path.clone(), 0.8, 1.0),
         };
         commands.spawn((
             PbrBundle {
-                mesh,
+                mesh: quad.clone(),
                 material: mat,
                 transform: Transform {
-                    translation: Vec3::new(x, y, z),
-                    scale,
+                    translation: Vec3::new(x, h * 0.5, z),
+                    scale: Vec3::new(w, h, 1.0),
                     ..default()
                 },
                 ..default()
             },
             FurnitureTag { id: f.id.clone(), kind: f.kind.clone() },
+            Billboard,
         ));
     }
 
-    // --- Marqueurs d'imagerie de rue (billboards orientes par azimut) ---
+    // --- Lieux d'accueil (POI) : billboards colores, un peu plus hauts ---
+    for p in &payload.neighborhood.pois {
+        let (x, z) = origin.to_local(p.lng, p.lat);
+        let mat = match p.kind.as_str() {
+            "hotel" => mat_hotel.clone(),
+            "restaurant" => mat_restaurant.clone(),
+            "cafe" => mat_cafe.clone(),
+            "community" => mat_community.clone(),
+            "worship" => mat_worship.clone(),
+            _ => mat_community.clone(),
+        };
+        let h = 3.2;
+        commands.spawn((
+            PbrBundle {
+                mesh: quad.clone(),
+                material: mat,
+                transform: Transform {
+                    translation: Vec3::new(x, 2.0 + h * 0.5, z),
+                    scale: Vec3::new(2.2, h, 1.0),
+                    ..default()
+                },
+                ..default()
+            },
+            PoiTag { id: p.id.clone(), kind: p.kind.clone(), name: p.name.clone() },
+            Billboard,
+        ));
+    }
+
+    // --- Marqueurs d'imagerie de rue (billboards face camera) ---
     for p in &payload.photos {
         let (x, z) = origin.to_local(p.lng, p.lat);
         let mat = if p.provider == "mapillary" {
@@ -196,19 +277,19 @@ pub fn setup(
         } else {
             mat_panoramax.clone()
         };
-        let yaw = p.azimuth.map(|a| -(a as f32).to_radians()).unwrap_or(0.0);
         commands.spawn((
             PbrBundle {
-                mesh: unit_cube.clone(),
+                mesh: quad.clone(),
                 material: mat,
                 transform: Transform {
                     translation: Vec3::new(x, 2.6, z),
-                    rotation: Quat::from_rotation_y(yaw),
-                    scale: Vec3::new(3.0, 2.0, 0.2),
+                    scale: Vec3::new(3.0, 2.0, 1.0),
+                    ..default()
                 },
                 ..default()
             },
             PhotoTag { id: p.id.clone(), provider: p.provider.clone() },
+            Billboard,
         ));
     }
 

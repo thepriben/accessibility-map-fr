@@ -9,13 +9,33 @@ export interface OsmBuilding {
   name: string | null;
 }
 
-export type FurnitureKind = 'bench' | 'bus_stop' | 'fountain' | 'tree' | 'crossing';
+export type FurnitureKind =
+  | 'bench'
+  | 'bus_stop'
+  | 'fountain'
+  | 'tree'
+  | 'crossing'
+  | 'bollard'
+  | 'lamp'
+  | 'drinking_water'
+  | 'waste';
 
 export interface OsmFurniture {
   id: string;
   kind: FurnitureKind;
   lng: number;
   lat: number;
+}
+
+/** Lieux d'accueil (POI) : hotels, restaurants, cafes, communautaires, cultuels. */
+export type PoiKind = 'hotel' | 'restaurant' | 'cafe' | 'community' | 'worship';
+
+export interface OsmPoi {
+  id: string;
+  kind: PoiKind;
+  lng: number;
+  lat: number;
+  name: string | null;
 }
 
 export interface OsmPath {
@@ -28,6 +48,7 @@ export interface NeighborhoodData {
   center: { lng: number; lat: number };
   buildings: OsmBuilding[];
   furniture: OsmFurniture[];
+  pois: OsmPoi[];
   paths: OsmPath[];
 }
 
@@ -63,11 +84,23 @@ export async function fetchNeighborhood(
       node["amenity"="fountain"](${b});
       node["natural"="tree"](${b});
       node["highway"="crossing"](${b});
+      node["barrier"="bollard"](${b});
+      node["highway"="street_lamp"](${b});
+      node["amenity"="drinking_water"](${b});
+      node["amenity"="waste_basket"](${b});
+      node["tourism"="hotel"](${b});
+      node["amenity"="restaurant"](${b});
+      way["amenity"="restaurant"](${b});
+      node["amenity"~"^(cafe|bar|pub)$"](${b});
+      node["amenity"~"^(community_centre|social_centre)$"](${b});
+      way["amenity"~"^(community_centre|social_centre)$"](${b});
+      node["amenity"="place_of_worship"](${b});
+      way["amenity"="place_of_worship"](${b});
       way["footway"="sidewalk"](${b});
       way["highway"="footway"](${b});
       way["leisure"="park"](${b});
     );
-    out geom tags;`;
+    out geom tags center;`;
 
   const res = await fetch(OVERPASS_API, {
     method: 'POST',
@@ -81,11 +114,14 @@ export async function fetchNeighborhood(
     center: { lng, lat },
     buildings: [],
     furniture: [],
+    pois: [],
     paths: [],
   };
 
   for (const el of data.elements || []) {
     const tags = el.tags || {};
+
+    // Batiments (way avec footprint).
     if (el.type === 'way' && tags.building && Array.isArray(el.geometry)) {
       out.buildings.push({
         id: `w${el.id}`,
@@ -95,15 +131,30 @@ export async function fetchNeighborhood(
         wikidata: tags.wikidata || null,
         name: tags.name || null,
       });
-    } else if (el.type === 'node') {
-      let kind: FurnitureKind | null = null;
-      if (tags.amenity === 'bench') kind = 'bench';
-      else if (tags.highway === 'bus_stop' || tags.public_transport === 'platform') kind = 'bus_stop';
-      else if (tags.amenity === 'fountain') kind = 'fountain';
-      else if (tags.natural === 'tree') kind = 'tree';
-      else if (tags.highway === 'crossing') kind = 'crossing';
+    }
+
+    // Coordonnees ponctuelles (node -> lon/lat ; way -> center).
+    const pos: [number, number] | null =
+      el.type === 'node'
+        ? [el.lon, el.lat]
+        : el.center
+        ? [el.center.lon, el.center.lat]
+        : null;
+
+    // POI d'accueil (node ou way : restaurant, hotel, culte peuvent etre des ways).
+    const poi = poiKind(tags);
+    if (poi && pos) {
+      out.pois.push({ id: `${el.type[0]}${el.id}`, kind: poi, lng: pos[0], lat: pos[1], name: tags.name || null });
+    }
+
+    // Mobilier / obstacles / points d'eau (nodes).
+    if (el.type === 'node') {
+      const kind = furnitureKind(tags);
       if (kind) out.furniture.push({ id: `n${el.id}`, kind, lng: el.lon, lat: el.lat });
-    } else if (el.type === 'way' && Array.isArray(el.geometry)) {
+    }
+
+    // Cheminements (footway / trottoir / parc).
+    if (el.type === 'way' && Array.isArray(el.geometry)) {
       let kind: OsmPath['kind'] | null = null;
       if (tags.footway === 'sidewalk') kind = 'sidewalk';
       else if (tags.highway === 'footway') kind = 'footway';
@@ -118,4 +169,26 @@ export async function fetchNeighborhood(
     }
   }
   return out;
+}
+
+function furnitureKind(tags: Record<string, string>): FurnitureKind | null {
+  if (tags.amenity === 'bench') return 'bench';
+  if (tags.highway === 'bus_stop' || tags.public_transport === 'platform') return 'bus_stop';
+  if (tags.amenity === 'fountain') return 'fountain';
+  if (tags.natural === 'tree') return 'tree';
+  if (tags.highway === 'crossing') return 'crossing';
+  if (tags.barrier === 'bollard') return 'bollard';
+  if (tags.highway === 'street_lamp') return 'lamp';
+  if (tags.amenity === 'drinking_water') return 'drinking_water';
+  if (tags.amenity === 'waste_basket') return 'waste';
+  return null;
+}
+
+function poiKind(tags: Record<string, string>): PoiKind | null {
+  if (tags.tourism === 'hotel') return 'hotel';
+  if (tags.amenity === 'restaurant') return 'restaurant';
+  if (tags.amenity === 'cafe' || tags.amenity === 'bar' || tags.amenity === 'pub') return 'cafe';
+  if (tags.amenity === 'community_centre' || tags.amenity === 'social_centre') return 'community';
+  if (tags.amenity === 'place_of_worship') return 'worship';
+  return null;
 }
