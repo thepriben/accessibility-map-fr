@@ -65,14 +65,52 @@ function toNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Cache mémoire : évite de re-télécharger le voisinage (entrée 3D instantanée
+// après survol/sélection). Clé = coordonnées arrondies + rayon.
+const cache = new Map<string, Promise<NeighborhoodData>>();
+function cacheKey(lng: number, lat: number, r: number): string {
+  return `${lng.toFixed(5)},${lat.toFixed(5)},${r}`;
+}
+
+/** Lance (sans attendre) la récupération du voisinage pour le mettre en cache. */
+export function prefetchNeighborhood(lng: number, lat: number, radiusM = 90): void {
+  const key = cacheKey(lng, lat, radiusM);
+  if (!cache.has(key)) {
+    cache.set(
+      key,
+      fetchNeighborhoodRaw(lng, lat, radiusM).catch((e) => {
+        cache.delete(key); // permet une nouvelle tentative
+        throw e;
+      })
+    );
+  }
+}
+
 /**
  * Recupere le voisinage OSM (rayon ~ des "30 derniers metres") : batiments,
- * bancs, arrets de bus, fontaines, arbres, passages pietons, trottoirs, parcs.
+ * mobilier, obstacles, points d'eau, trottoirs, parcs et lieux d'accueil.
+ * Résultat mémoïsé.
  */
-export async function fetchNeighborhood(
+export function fetchNeighborhood(
   lng: number,
   lat: number,
-  radiusM = 80
+  radiusM = 90
+): Promise<NeighborhoodData> {
+  const key = cacheKey(lng, lat, radiusM);
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const p = fetchNeighborhoodRaw(lng, lat, radiusM).catch((e) => {
+    cache.delete(key);
+    throw e;
+  });
+  cache.set(key, p);
+  return p;
+}
+
+async function fetchNeighborhoodRaw(
+  lng: number,
+  lat: number,
+  radiusM: number
 ): Promise<NeighborhoodData> {
   const b = bbox(lng, lat, radiusM);
   const query = `[out:json][timeout:25];

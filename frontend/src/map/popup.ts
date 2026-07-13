@@ -1,5 +1,6 @@
 import maplibregl, { type Map as MlMap, type Popup } from 'maplibre-gl';
 import { knownCriteria } from '../a11y';
+import { prefetchNeighborhood } from '../data/overpass';
 import type { Place } from '../types';
 
 let popup: Popup | null = null;
@@ -18,6 +19,8 @@ export interface PopupHandlers {
 /** Affiche un popup carto avec les infos Acceslibre du lieu + actions (3D / fiche). */
 export function showPlacePopup(map: MlMap, place: Place, handlers: PopupHandlers): void {
   const p = place.properties;
+  // Precharge le voisinage : l'entree en 3D depuis ce popup sera quasi instantanee.
+  prefetchNeighborhood(place.lng, place.lat);
   const crit = knownCriteria(p).slice(0, 6);
   const badges = crit.length
     ? crit

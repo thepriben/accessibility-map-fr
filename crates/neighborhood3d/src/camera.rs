@@ -25,16 +25,15 @@ impl Default for OrbitCamera {
     }
 }
 
-pub fn orbit(
+/// Orbite a la souris : clic gauche = pivoter, clic droit / molette-clic =
+/// se deplacer (pan), molette = zoom. Ne fait que modifier l'etat OrbitCamera.
+pub fn orbit_mouse(
     mut orbit: ResMut<OrbitCamera>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut motion: EventReader<MouseMotion>,
     mut wheel: EventReader<MouseWheel>,
-    mut q: Query<&mut Transform, With<Camera>>,
 ) {
-    let mut changed = false;
     let left = buttons.pressed(MouseButton::Left);
-    // Bouton droit ou molette : deplacement (pan) dans le voisinage.
     let pan = buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle);
 
     for ev in motion.read() {
@@ -44,23 +43,60 @@ pub fn orbit(
             let right_dir = Vec3::new(cy, 0.0, -sy);
             let fwd_dir = Vec3::new(sy, 0.0, cy);
             orbit.focus += right_dir * (-ev.delta.x * scale) + fwd_dir * (ev.delta.y * scale);
-            changed = true;
         } else if left {
             orbit.yaw -= ev.delta.x * 0.005;
             orbit.pitch = (orbit.pitch - ev.delta.y * 0.005).clamp(0.12, 1.5);
-            changed = true;
         }
     }
-
     for ev in wheel.read() {
         orbit.radius = (orbit.radius * (1.0 - ev.y * 0.1)).clamp(8.0, 600.0);
-        changed = true;
     }
+}
 
-    if !changed {
-        return;
+/// Controles clavier (accessibilite) : fleches / ZQSD-WASD = se deplacer,
+/// A/E = pivoter, +/- = zoomer. Frame-rate independant.
+pub fn orbit_keyboard(
+    mut orbit: ResMut<OrbitCamera>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+) {
+    let dt = time.delta_seconds();
+    let (sy, cy) = orbit.yaw.sin_cos();
+    let right_dir = Vec3::new(cy, 0.0, -sy);
+    let fwd_dir = Vec3::new(sy, 0.0, cy);
+    let pan = orbit.radius * 0.9 * dt;
+
+    let mut mv = Vec3::ZERO;
+    if keys.any_pressed([KeyCode::ArrowUp, KeyCode::KeyW, KeyCode::KeyZ]) {
+        mv += fwd_dir * pan;
     }
+    if keys.any_pressed([KeyCode::ArrowDown, KeyCode::KeyS]) {
+        mv -= fwd_dir * pan;
+    }
+    if keys.any_pressed([KeyCode::ArrowLeft, KeyCode::KeyA, KeyCode::KeyQ]) {
+        mv -= right_dir * pan;
+    }
+    if keys.any_pressed([KeyCode::ArrowRight, KeyCode::KeyD]) {
+        mv += right_dir * pan;
+    }
+    orbit.focus += mv;
 
+    if keys.pressed(KeyCode::KeyE) {
+        orbit.yaw -= dt * 1.4;
+    }
+    if keys.pressed(KeyCode::KeyR) {
+        orbit.yaw += dt * 1.4;
+    }
+    if keys.any_pressed([KeyCode::Equal, KeyCode::NumpadAdd, KeyCode::PageUp]) {
+        orbit.radius = (orbit.radius * (1.0 - dt * 1.5)).clamp(8.0, 600.0);
+    }
+    if keys.any_pressed([KeyCode::Minus, KeyCode::NumpadSubtract, KeyCode::PageDown]) {
+        orbit.radius = (orbit.radius * (1.0 + dt * 1.5)).clamp(8.0, 600.0);
+    }
+}
+
+/// Applique l'etat OrbitCamera a la camera chaque frame (mouvement fluide).
+pub fn apply_orbit(orbit: Res<OrbitCamera>, mut q: Query<&mut Transform, With<Camera>>) {
     if let Ok(mut tf) = q.get_single_mut() {
         let (sy, cy) = orbit.yaw.sin_cos();
         let (sp, cp) = orbit.pitch.sin_cos();

@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::camera::OrbitCamera;
 use crate::components::*;
 use crate::data::ScenePayload;
 use crate::geo::Origin;
@@ -37,15 +38,39 @@ fn hash_id(s: &str) -> u32 {
     h
 }
 
+/// Test point-dans-polygone (ray casting) sur un anneau local (x, z).
+fn ring_contains(ring: &[(f32, f32)], px: f32, pz: f32) -> bool {
+    let mut inside = false;
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, zi) = ring[i];
+        let (xj, zj) = ring[j];
+        if ((zi > pz) != (zj > pz))
+            && (px < (xj - xi) * (pz - zi) / (zj - zi + f32::EPSILON) + xi)
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
 pub fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut orbit: ResMut<OrbitCamera>,
     input: Res<SceneInput>,
 ) {
     let payload = &input.0;
     let origin = Origin::new(payload.place.lng, payload.place.lat);
     let dark = payload.is_dark();
+    // Etendue du voisinage (pour cadrer la camera automatiquement).
+    let mut max_r = 25.0_f32;
 
     // Couleur de fond selon le theme (accord avec --scene-bg cote CSS).
     commands.insert_resource(ClearColor(if dark {
@@ -73,8 +98,10 @@ pub fn setup(
     .map(|(r, g, b)| flat(&mut materials, *r, *g, *b))
     .collect();
     let mat_building_wd = flat(&mut materials, 0.85, 0.70, 0.25);
+    // Batiment qui contient le lieu Acceslibre : surbrillance franche.
+    let mat_target_building = flat(&mut materials, 0.95, 0.55, 0.20);
 
-    let mat_place = flat(&mut materials, 0.83, 0.66, 0.33);
+    let mat_place = flat(&mut materials, 0.99, 0.84, 0.30);
     let mat_bench = flat(&mut materials, 0.62, 0.40, 0.22);
     let mat_bus = flat(&mut materials, 0.20, 0.45, 0.85);
     let mat_fountain = flat(&mut materials, 0.25, 0.60, 0.85);
@@ -139,8 +166,13 @@ pub fn setup(
             continue;
         }
         let ring: Vec<(f32, f32)> = b.ring.iter().map(|p| origin.to_local(p[0], p[1])).collect();
+        for &(x, z) in &ring {
+            max_r = max_r.max((x * x + z * z).sqrt());
+        }
         let h = building_height(b.height, b.levels);
-        let mat = if b.wikidata.is_some() {
+        let mat = if ring_contains(&ring, 0.0, 0.0) {
+            mat_target_building.clone()
+        } else if b.wikidata.is_some() {
             mat_building_wd.clone()
         } else {
             wall_palette[(hash_id(&b.id) as usize) % wall_palette.len()].clone()
@@ -197,6 +229,7 @@ pub fn setup(
     // --- Mobilier / obstacles / points d'eau (billboards facon Doom) ---
     for f in &payload.neighborhood.furniture {
         let (x, z) = origin.to_local(f.lng, f.lat);
+        max_r = max_r.max((x * x + z * z).sqrt());
         // Passage pieton : marquage au sol (pas un billboard).
         if f.kind == "crossing" {
             commands.spawn((
@@ -244,6 +277,7 @@ pub fn setup(
     // --- Lieux d'accueil (POI) : billboards colores, un peu plus hauts ---
     for p in &payload.neighborhood.pois {
         let (x, z) = origin.to_local(p.lng, p.lat);
+        max_r = max_r.max((x * x + z * z).sqrt());
         let mat = match p.kind.as_str() {
             "hotel" => mat_hotel.clone(),
             "restaurant" => mat_restaurant.clone(),
@@ -293,16 +327,22 @@ pub fn setup(
         ));
     }
 
-    // --- Repere du lieu Acceslibre (au centre) ---
+    // --- Balise du lieu Acceslibre (au centre) : mat + disque au sol ---
     commands.spawn((
         PbrBundle {
-            mesh: meshes.add(Cylinder::new(1.2, 6.0)),
-            material: mat_place,
-            transform: Transform::from_xyz(0.0, 3.0, 0.0),
+            mesh: meshes.add(Cylinder::new(0.5, 13.0)),
+            material: mat_place.clone(),
+            transform: Transform::from_xyz(0.0, 6.5, 0.0),
             ..default()
         },
         AccessiblePlaceTag { nom: payload.place.nom.clone() },
     ));
+    commands.spawn(PbrBundle {
+        mesh: meshes.add(Cylinder::new(3.2, 0.25)),
+        material: mat_place.clone(),
+        transform: Transform::from_xyz(0.0, 0.12, 0.0),
+        ..default()
+    });
 
     // --- Eclairage (sobre, sans ombres pour la perf WASM) ---
     commands.insert_resource(AmbientLight {
@@ -323,9 +363,32 @@ pub fn setup(
         ..default()
     });
 
-    // --- Camera ---
-    commands.spawn(Camera3dBundle {
-        transform: Transform::from_xyz(70.0, 90.0, 70.0).looking_at(Vec3::new(0.0, 2.0, 0.0), Vec3::Y),
-        ..default()
-    });
+    // --- Camera : cadrage automatique sur l'etendue du voisinage + brouillard ---
+    orbit.focus = Vec3::new(0.0, 2.5, 0.0);
+    orbit.radius = (max_r * 1.7).clamp(35.0, 320.0);
+    orbit.yaw = 0.7;
+    orbit.pitch = 0.72;
+    let (sy, cy) = orbit.yaw.sin_cos();
+    let (sp, cp) = orbit.pitch.sin_cos();
+    let cam_pos = orbit.focus + Vec3::new(cp * sy, sp, cp * cy) * orbit.radius;
+
+    let fog_color = if dark {
+        Color::srgb(0.047, 0.059, 0.078)
+    } else {
+        Color::srgb(0.874, 0.902, 0.933)
+    };
+    commands.spawn((
+        Camera3dBundle {
+            transform: Transform::from_translation(cam_pos).looking_at(orbit.focus, Vec3::Y),
+            ..default()
+        },
+        FogSettings {
+            color: fog_color,
+            falloff: FogFalloff::Linear {
+                start: orbit.radius * 0.9,
+                end: orbit.radius * 2.6,
+            },
+            ..default()
+        },
+    ));
 }
