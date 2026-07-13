@@ -12,6 +12,11 @@ export interface ScenePayload {
 
 const CANVAS_ID = 'scene3d';
 
+/** Notifie l'UI (bouton swap, etc.) d'un changement d'état de la vue 3D. */
+function dispatchSceneToggle(active: boolean): void {
+  window.dispatchEvent(new CustomEvent('scene3d:toggle', { detail: { active } }));
+}
+
 // Chargement paresseux du module Three.js (chunk separe) : la page reste legere
 // et la 3D n'est telechargee qu'a la premiere utilisation.
 type SceneMod = typeof import('../three/scene3d');
@@ -68,6 +73,7 @@ export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
       return false;
     }
     mod.startScene3D(canvas, payload);
+    dispatchSceneToggle(true);
     return true;
   } catch (err) {
     console.error('Echec du lancement de la scene 3D', err);
@@ -99,6 +105,7 @@ export function exitScene3D(): void {
   }
   lastPayload = null;
   sceneMod?.stopScene3D();
+  dispatchSceneToggle(false);
 }
 
 function sceneUiHtml(payload: ScenePayload): string {
@@ -108,7 +115,7 @@ function sceneUiHtml(payload: ScenePayload): string {
     <div class="scene3d-bar">
       <div class="scene3d-info">
         <strong>${escapeHtml(payload.place.nom)}</strong>
-        <span class="scene3d-sub">${nb.buildings.length} bâtiment(s) &middot; ${paths} cheminement(s) &middot; rayon 25 m</span>
+        <span class="scene3d-sub">${nb.buildings.length} bâtiment(s) &middot; ${paths} cheminement(s) &middot; rayon 75 m</span>
         <span class="scene3d-sub">Glisser = se déplacer &middot; clic droit = pivoter &middot; molette = zoom &middot; flèches = se déplacer</span>
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>

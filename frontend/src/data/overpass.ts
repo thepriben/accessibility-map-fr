@@ -105,7 +105,7 @@ function cacheKey(lng: number, lat: number, r: number): string {
 }
 
 /** Lance (sans attendre) la récupération du voisinage pour le mettre en cache. */
-export function prefetchNeighborhood(lng: number, lat: number, radiusM = 25): void {
+export function prefetchNeighborhood(lng: number, lat: number, radiusM = 75): void {
   const key = cacheKey(lng, lat, radiusM);
   if (!cache.has(key)) {
     cache.set(
@@ -126,7 +126,7 @@ export function prefetchNeighborhood(lng: number, lat: number, radiusM = 25): vo
 export function fetchNeighborhood(
   lng: number,
   lat: number,
-  radiusM = 25
+  radiusM = 75
 ): Promise<NeighborhoodData> {
   const key = cacheKey(lng, lat, radiusM);
   const hit = cache.get(key);

@@ -14,7 +14,9 @@
     <a class="skip-link" href="#main">Aller au contenu principal</a>
 
     <header class="app-header">
-      <h1 class="app-title">Carte d'accessibilité</h1>
+      <button id="home-btn" class="app-title" type="button" title="Revenir à l'accueil" aria-label="Carte d'accessibilité — revenir à l'accueil">
+        Carte d'accessibilité
+      </button>
       <div class="header-actions">
         <div class="view-switch" role="tablist" aria-label="Choix de la vue">
           <button id="tab-map" role="tab" aria-selected="true" aria-controls="view-map" class="is-active">
@@ -24,6 +26,7 @@
             Liste accessible
           </button>
         </div>
+        <button id="toggle-3d" class="toggle-3d" type="button" aria-pressed="false" title="Basculer entre la vue 3D et la carte 2D">Vue 3D</button>
         <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Basculer le thème clair/sombre" aria-pressed="false" title="Thème clair/sombre">🌙</button>
       </div>
     </header>

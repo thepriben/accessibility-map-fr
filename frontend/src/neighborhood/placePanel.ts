@@ -1,14 +1,14 @@
 import { knownCriteria } from '../a11y';
 import { fetchNeighborhood, type NeighborhoodData } from '../data/overpass';
-import { fetchNearbyPhotos } from '../imagery/imagery';
+import { findWikidataNear, getWikidataEntity, type WikidataInfo } from '../data/wikidata';
 import { flyToPlace } from '../map/mapView';
 import { state } from '../state';
 import { buildScenePayload, enterScene3D } from '../transition/transition';
 import { hideLoader, setLoaderMessage, showLoader } from '../ui/loader';
-import type { Place, StreetPhoto } from '../types';
+import type { Place } from '../types';
 
-/** Rayon du voisinage exploré (les « derniers mètres » autour du lieu). */
-const NEIGHBORHOOD_RADIUS_M = 25;
+/** Rayon du voisinage exploré autour du lieu. */
+const NEIGHBORHOOD_RADIUS_M = 75;
 
 /** Voisinage vide (repli) : la 3D s'ouvre quand meme, centree sur le lieu. */
 function emptyNeighborhood(place: Place): NeighborhoodData {
@@ -53,14 +53,78 @@ export async function openPlacePanel(place: Place): Promise<void> {
       : '<li>Peu d\'informations d\'accessibilité renseignées.</li>';
   }
 
-  // Chargement parallele voisinage + imagerie (a la demande).
-  const [neighborhood, photos] = await Promise.all([
-    fetchNeighborhood(place.lng, place.lat, NEIGHBORHOOD_RADIUS_M).catch(() => null),
-    fetchNearbyPhotos(place.lng, place.lat, 120).catch(() => [] as StreetPhoto[]),
-  ]);
-
-  renderImagery(panel, photos);
+  const neighborhood = await fetchNeighborhood(place.lng, place.lat, NEIGHBORHOOD_RADIUS_M).catch(
+    () => null
+  );
   wire3DButton(panel, place, neighborhood);
+  void renderWikidata(panel, place, neighborhood);
+}
+
+/** Point-dans-polygone (ray casting) sur un anneau [lng,lat]. */
+function ringContains(ring: [number, number][], x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-12) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** Cherche le bâtiment cible (contenant le point) et son éventuel QID Wikidata. */
+function targetBuildingQid(nb: NeighborhoodData | null, lng: number, lat: number): string | null {
+  if (!nb) return null;
+  for (const b of nb.buildings) {
+    if (b.wikidata && b.ring.length >= 3 && ringContains(b.ring, lng, lat)) return b.wikidata;
+  }
+  // À défaut, tout bâtiment du voisinage portant un QID.
+  for (const b of nb.buildings) {
+    if (b.wikidata) return b.wikidata;
+  }
+  return null;
+}
+
+/** Enrichit la fiche avec les infos Wikidata du bâtiment (si disponibles). */
+async function renderWikidata(
+  panel: HTMLElement,
+  place: Place,
+  nb: NeighborhoodData | null
+): Promise<void> {
+  const el = panel.querySelector('#panel-wikidata');
+  if (!el) return;
+
+  const qid = targetBuildingQid(nb, place.lng, place.lat);
+  let info: WikidataInfo | null = null;
+  try {
+    info = qid
+      ? await getWikidataEntity(qid)
+      : await findWikidataNear(place.lng, place.lat);
+  } catch {
+    info = null;
+  }
+
+  // La fiche a pu être fermée/rouverte entre-temps : on ignore alors le résultat.
+  if (!info || panel.hidden) return;
+
+  const img = info.imageUrl
+    ? `<a class="wd-photo" href="${esc(info.imageSourceUrl)}" target="_blank" rel="noopener"
+         title="Voir l'original et la licence sur Wikimedia Commons">
+         <img src="${esc(info.imageUrl)}" alt="Photo de ${esc(info.label ?? 'ce bâtiment')}" loading="lazy">
+       </a>`
+    : '';
+
+  el.innerHTML = `
+    <h3 class="panel-sub">Le bâtiment</h3>
+    ${img}
+    ${info.label ? `<p class="wd-name">${esc(info.label)}</p>` : ''}
+    ${info.description ? `<p class="wd-desc">${esc(info.description)}</p>` : ''}
+    <p class="wd-links">
+      <a href="${esc(info.wikidataUrl)}" target="_blank" rel="noopener">Fiche Wikidata &nearr;</a>${
+        info.imageSourceUrl
+          ? ` &middot; <a href="${esc(info.imageSourceUrl)}" target="_blank" rel="noopener">Photo &amp; licence &nearr;</a>`
+          : ''
+      }
+    </p>`;
 }
 
 export function closePlacePanel(): void {
@@ -85,34 +149,9 @@ function skeleton(place: Place): string {
     <h3 class="panel-sub">Accessibilité</h3>
     <ul id="panel-criteria" class="panel-criteria"><li>Chargement...</li></ul>
 
-    <h3 class="panel-sub">Imagerie de rue à proximité</h3>
-    <div id="panel-imagery" class="panel-imagery"><p class="muted">Recherche Panoramax / Mapillary...</p></div>
+    <div id="panel-wikidata" class="panel-wikidata"></div>
 
     <div id="panel-3d" class="panel-3d"></div>`;
-}
-
-function renderImagery(panel: HTMLElement, photos: StreetPhoto[]): void {
-  const el = panel.querySelector('#panel-imagery');
-  if (!el) return;
-  if (!photos.length) {
-    el.innerHTML = '<p class="muted">Aucune photo de rue trouvée à proximité.</p>';
-    return;
-  }
-  const items = photos
-    .slice(0, 12)
-    .map((ph) => {
-      const az = ph.azimuth != null ? ` (${Math.round(ph.azimuth)}&deg;)` : '';
-      const label = `${ph.provider}${az}`;
-      const inner = ph.thumbUrl
-        ? `<img src="${esc(ph.thumbUrl)}" alt="Photo ${esc(ph.provider)}" loading="lazy">`
-        : `<span class="thumb-ph">${esc(ph.provider)}</span>`;
-      return `<a class="imagery-thumb imagery-${ph.provider}" href="${esc(
-        ph.sourceUrl
-      )}" target="_blank" rel="noopener" title="${esc(label)}">${inner}</a>`;
-    })
-    .join('');
-  el.innerHTML = `<div class="imagery-grid">${items}</div>
-    <p class="muted">${photos.length} photo(s) &middot; Panoramax et Mapillary</p>`;
 }
 
 function wire3DButton(
@@ -128,11 +167,11 @@ function wire3DButton(
     const btn = el.querySelector('#btn-3d') as HTMLButtonElement;
     btn.disabled = true;
     btn.textContent = 'Chargement de la 3D...';
-    showLoader('Chargement de la vue 3D (module WASM)…');
+    showLoader('Préparation de la vue 3D…');
     const ok = await enterScene3D(buildScenePayload(place, nb, []));
     hideLoader();
     btn.disabled = false;
-    btn.textContent = ok ? 'Explorer le voisinage en 3D' : '3D indisponible (build WASM requis)';
+    btn.textContent = ok ? 'Explorer le voisinage en 3D' : '3D indisponible';
   });
 }
 
@@ -151,7 +190,7 @@ export async function autoEnter3D(place: Place): Promise<boolean> {
     ).catch(() => null);
     // Si Overpass n'a rien renvoye, on bascule quand meme en 3D (voisinage vide).
     const nb = neighborhood ?? emptyNeighborhood(place);
-    setLoaderMessage('Chargement de la vue 3D (module WASM)…');
+    setLoaderMessage('Préparation de la vue 3D…');
     return await enterScene3D(buildScenePayload(place, nb, []));
   } finally {
     hideLoader();

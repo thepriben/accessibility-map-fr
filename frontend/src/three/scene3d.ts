@@ -47,33 +47,47 @@ function ringContains(ring: [number, number][], px: number, pz: number): boolean
   return inside;
 }
 
-function hashId(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i += 1) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-const WALL_PALETTE = [0x9e5c4d, 0x8c784d, 0x66738c, 0x7a6685, 0x598580, 0x998c73];
-const COLOR_TARGET = 0xf28c33;
-const COLOR_WIKIDATA = 0xd9b340;
+const COLOR_TARGET = 0xef8b4e; // lieu cible : orange chaud (conserve)
 
 interface Theme {
   bg: number;
   ground: number;
   path: number;
-  ambient: number;
-  ambientI: number;
-  dir: number;
+  wall: number; // batiments neutres (tous sauf la cible)
+  sky: number;
+  hemiGround: number;
+  hemiI: number;
   dirI: number;
+  edge: number;
+  edgeOpacity: number;
 }
 
 function themeColors(dark: boolean): Theme {
   return dark
-    ? { bg: 0x0c0f14, ground: 0x171a20, path: 0x5b6b86, ambient: 0x8899bb, ambientI: 1.1, dir: 0xffffff, dirI: 1.6 }
-    : { bg: 0xdfe6ee, ground: 0x9e988c, path: 0xdfe3ea, ambient: 0xffffff, ambientI: 1.5, dir: 0xffffff, dirI: 1.9 };
+    ? {
+        bg: 0x0e1219,
+        ground: 0x1a1f29,
+        path: 0x6b7791,
+        wall: 0x3a4150,
+        sky: 0x2a3446,
+        hemiGround: 0x0c0f14,
+        hemiI: 0.9,
+        dirI: 2.0,
+        edge: 0x000000,
+        edgeOpacity: 0.35,
+      }
+    : {
+        bg: 0xe8edf3,
+        ground: 0xb9b3a6,
+        path: 0xeef1f5,
+        wall: 0xc6c8cc,
+        sky: 0xeaf1fb,
+        hemiGround: 0x9a948a,
+        hemiI: 1.15,
+        dirI: 2.4,
+        edge: 0x2b2f36,
+        edgeOpacity: 0.18,
+      };
 }
 
 /** Construit un ruban plat (cheminement) le long d'une polyligne locale. */
@@ -114,6 +128,51 @@ function ribbon(points: [number, number][], width: number): THREE.BufferGeometry
   return geom;
 }
 
+/** Ajoute un marqueur d'entree (pin) a l'origine = point Access'libre visé. */
+function addEntranceMarker(scene: THREE.Scene, hasTargetBuilding: boolean): void {
+  const group = new THREE.Group();
+  // Un pin plus discret quand un batiment cible est deja mis en valeur.
+  const headY = hasTargetBuilding ? 5.2 : 3.4;
+
+  const pole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.12, headY, 12),
+    new THREE.MeshStandardMaterial({ color: 0x5b6472, roughness: 0.6, metalness: 0.1 })
+  );
+  pole.position.y = headY / 2;
+  pole.castShadow = true;
+  group.add(pole);
+
+  const head = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.85),
+    new THREE.MeshStandardMaterial({
+      color: COLOR_TARGET,
+      emissive: COLOR_TARGET,
+      emissiveIntensity: 0.6,
+      roughness: 0.4,
+      metalness: 0.1,
+    })
+  );
+  head.position.y = headY + 0.6;
+  head.castShadow = true;
+  group.add(head);
+
+  // Petit disque au sol pour situer l'acces meme si le pin est masque.
+  const disc = new THREE.Mesh(
+    new THREE.RingGeometry(0.9, 1.4, 32),
+    new THREE.MeshBasicMaterial({
+      color: COLOR_TARGET,
+      transparent: true,
+      opacity: 0.5,
+      side: THREE.DoubleSide,
+    })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.08;
+  group.add(disc);
+
+  scene.add(group);
+}
+
 /** Construit (ou reconstruit) la scene Three.js dans le canvas fourni. */
 export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload): void {
   stopScene3D();
@@ -127,15 +186,37 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
 
   // --- Sol ---
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(1000, 1000),
-    new THREE.MeshLambertMaterial({ color: th.ground })
+    new THREE.PlaneGeometry(2000, 2000),
+    new THREE.MeshStandardMaterial({ color: th.ground, roughness: 1, metalness: 0 })
   );
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.05;
+  ground.receiveShadow = true;
   scene.add(ground);
 
+  const edgeMat = new THREE.LineBasicMaterial({
+    color: th.edge,
+    transparent: true,
+    opacity: th.edgeOpacity,
+  });
+
   // --- Batiments extrudes ---
+  // Tous les batiments partagent un materiau gris neutre ; seul le batiment
+  // cible (celui qui contient le point Access'libre) garde l'orange.
+  const wallMat = new THREE.MeshStandardMaterial({
+    color: th.wall,
+    roughness: 0.9,
+    metalness: 0.02,
+  });
+  const targetMat = new THREE.MeshStandardMaterial({
+    color: COLOR_TARGET,
+    roughness: 0.8,
+    metalness: 0.02,
+    emissive: COLOR_TARGET,
+    emissiveIntensity: 0.12,
+  });
   let maxR = 20;
+  let hasTargetBuilding = false;
   for (const b of payload.neighborhood.buildings) {
     if (!b.ring || b.ring.length < 3) continue;
     const ring: [number, number][] = b.ring.map((p) => toLocal(p[0], p[1]));
@@ -149,17 +230,31 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     const geom = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
     geom.rotateX(-Math.PI / 2);
 
-    let color: number;
-    if (ringContains(ring, 0, 0)) color = COLOR_TARGET;
-    else if (b.wikidata) color = COLOR_WIKIDATA;
-    else color = WALL_PALETTE[hashId(b.id) % WALL_PALETTE.length];
+    const isTarget = !hasTargetBuilding && ringContains(ring, 0, 0);
+    if (isTarget) hasTargetBuilding = true;
 
-    const mesh = new THREE.Mesh(geom, new THREE.MeshLambertMaterial({ color }));
+    const mesh = new THREE.Mesh(geom, isTarget ? targetMat : wallMat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     scene.add(mesh);
+
+    // Aretes discretes pour une definition "maquette".
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25), edgeMat);
+    scene.add(edges);
   }
 
+  // --- Marqueur d'entree (point Access'libre) a l'origine ---
+  // Represente l'acces du lieu vise : utile quand le point n'est pas dans une
+  // empreinte de batiment, et pour s'orienter dans le voisinage.
+  addEntranceMarker(scene, hasTargetBuilding);
+
   // --- Cheminements pietons (footways / trottoirs) : rubans plats au sol ---
-  const pathMat = new THREE.MeshLambertMaterial({ color: th.path, side: THREE.DoubleSide });
+  const pathMat = new THREE.MeshStandardMaterial({
+    color: th.path,
+    roughness: 0.95,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
   for (const path of payload.neighborhood.paths) {
     if (path.kind === 'park') continue;
     const pts: [number, number][] = path.coords.map((p) => toLocal(p[0], p[1]));
@@ -169,27 +264,44 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     if (!geom) continue;
     const mesh = new THREE.Mesh(geom, pathMat);
     mesh.position.y = 0.06; // legerement au-dessus du sol (evite le z-fighting)
+    mesh.receiveShadow = true;
     scene.add(mesh);
   }
 
-  // --- Lumieres (sobres) ---
-  scene.add(new THREE.AmbientLight(th.ambient, th.ambientI));
-  const dir = new THREE.DirectionalLight(th.dir, th.dirI);
-  dir.position.set(60, 120, 40);
-  scene.add(dir);
+  const radius = Math.min(Math.max(maxR * 1.9, 40), 400);
+
+  // --- Lumieres : ambiance hemispherique douce + soleil avec ombres portees ---
+  scene.add(new THREE.HemisphereLight(th.sky, th.hemiGround, th.hemiI));
+  const sun = new THREE.DirectionalLight(0xfff4e6, th.dirI);
+  sun.position.set(radius * 0.7, radius * 1.3, radius * 0.5);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.5;
+  const s = radius * 1.25;
+  sun.shadow.camera.left = -s;
+  sun.shadow.camera.right = s;
+  sun.shadow.camera.top = s;
+  sun.shadow.camera.bottom = -s;
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = radius * 4;
+  scene.add(sun);
 
   // --- Camera + rendu ---
-  const radius = Math.min(Math.max(maxR * 1.9, 30), 320);
   const w = canvas.clientWidth || canvas.parentElement?.clientWidth || window.innerWidth;
   const h = canvas.clientHeight || canvas.parentElement?.clientHeight || window.innerHeight;
-  const camera = new THREE.PerspectiveCamera(55, w / h, 0.5, 4000);
-  camera.position.set(radius * 0.6, radius * 0.7, radius * 0.6);
+  const camera = new THREE.PerspectiveCamera(52, w / h, 0.5, 6000);
+  camera.position.set(radius * 0.55, radius * 0.75, radius * 0.55);
 
-  scene.fog = new THREE.Fog(th.bg, radius * 1.1, radius * 3);
+  scene.fog = new THREE.Fog(th.bg, radius * 1.4, radius * 3.4);
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(w, h, false);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
 
   // MapControls : navigation "type carte" (glisser = deplacer, clic droit =
   // pivoter, molette = zoom), plus intuitive pour explorer un voisinage.

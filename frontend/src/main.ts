@@ -17,6 +17,7 @@ import { exitScene3D, isScene3DActive, refreshScene3DTheme } from './transition/
 import { initTheme, onThemeChange } from './theme';
 import { hideLoader, showLoader } from './ui/loader';
 import { state } from './state';
+import { INITIAL_VIEW } from './config';
 import type { Place } from './types';
 
 // Bascule 3D automatique : au-dela de ce zoom, si un lieu est proche du centre,
@@ -31,18 +32,23 @@ function status(msg: string): void {
   statusEl.textContent = msg;
 }
 
+// Dernier lieu selectionne : sert de cible au bouton swap 3D/2D de l'en-tete.
+let lastSelectedPlace: Place | null = null;
+
 function selectPlace(place: Place): void {
+  lastSelectedPlace = place;
   history.replaceState(null, '', `#place=${encodeURIComponent(place.properties.uuid)}`);
   void openPlacePanel(place);
 }
 
 /** Depuis le popup : bascule directe en 3D dans le voisinage du lieu. */
 async function enter3DForPlace(place: Place): Promise<void> {
+  lastSelectedPlace = place;
   history.replaceState(null, '', `#place=${encodeURIComponent(place.properties.uuid)}`);
   state.setSelected(place.properties.uuid);
   status(`Passage en 3D : ${place.properties.nom}`);
   const ok = await autoEnter3D(place);
-  if (!ok) status('3D indisponible (build WASM requis) - vue carte conservée.');
+  if (!ok) status('3D indisponible - vue carte conservée.');
 }
 
 function setupTabs(): void {
@@ -232,11 +238,64 @@ async function maybeAutoEnter3D(): Promise<void> {
   if (!place) return;
 
   auto3dArmed = false;
+  lastSelectedPlace = place;
   history.replaceState(null, '', `#place=${encodeURIComponent(place.properties.uuid)}`);
   state.setSelected(place.properties.uuid);
   status(`Passage en 3D : ${place.properties.nom}`);
   const ok = await autoEnter3D(place);
-  if (!ok) status('3D indisponible (build WASM requis) - vue carte conservée.');
+  if (!ok) status('3D indisponible - vue carte conservée.');
+}
+
+/** Réinitialise l'application à son état de départ (clic sur le titre). */
+function resetToHome(): void {
+  exitScene3D();
+  closePlacePanel();
+  state.setSelected(null);
+  lastSelectedPlace = null;
+
+  const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
+  if (searchInput) {
+    searchInput.value = '';
+    searchInput.dispatchEvent(new Event('input'));
+  }
+
+  state.activeFilters.clear();
+  renderFilters(document.getElementById('filters-body')!, () => void refreshViews());
+  void refreshViews();
+
+  (document.getElementById('tab-map') as HTMLButtonElement | null)?.click();
+  history.replaceState(null, '', location.pathname + location.search);
+  getMap()?.flyTo({ center: INITIAL_VIEW.center, zoom: INITIAL_VIEW.zoom, duration: 800 });
+  status('');
+}
+
+/** Bouton swap : bascule entre la vue 3D et la carte 2D. */
+function setupViewSwap(): void {
+  const btn = document.getElementById('toggle-3d') as HTMLButtonElement | null;
+  if (!btn) return;
+
+  const sync = (active: boolean): void => {
+    btn.setAttribute('aria-pressed', String(active));
+    btn.textContent = active ? 'Carte 2D' : 'Vue 3D';
+    btn.title = active ? 'Revenir à la carte 2D' : 'Basculer en vue 3D du voisinage';
+  };
+
+  window.addEventListener('scene3d:toggle', (e) => sync((e as CustomEvent).detail.active === true));
+
+  btn.addEventListener('click', () => {
+    if (isScene3DActive()) {
+      exitScene3D();
+      return;
+    }
+    const place = lastSelectedPlace ?? nearestPlaceToCenter(400);
+    if (!place) {
+      status('Sélectionnez un lieu (clic sur un point) pour la vue 3D.');
+      return;
+    }
+    void enter3DForPlace(place);
+  });
+
+  sync(isScene3DActive());
 }
 
 async function handleDeepLink(): Promise<void> {
@@ -279,6 +338,8 @@ async function boot(): Promise<void> {
     });
 
     setupTabs();
+    setupViewSwap();
+    document.getElementById('home-btn')?.addEventListener('click', resetToHome);
     void handleDeepLink();
     status(cfg.label ? `${cfg.label} - ${cfg.count ?? dataCount()} lieux` : '');
   } catch (err) {
