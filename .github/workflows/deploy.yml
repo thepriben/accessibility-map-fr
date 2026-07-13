@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # Redeploie automatiquement quand le build des donnees (PMTiles) est termine,
+  # pour que le site bascule sur les tuiles France entiere fraiches.
+  workflow_run:
+    workflows: ["Build data (Acceslibre -> PMTiles)"]
+    types: [completed]
 
 permissions:
   contents: read
