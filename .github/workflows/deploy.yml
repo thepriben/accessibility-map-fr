@@ -63,7 +63,7 @@ jobs:
             "mode": "pmtiles",
             "source": "https://medialoco.github.io/accessibility-map-data/acceslibre.pmtiles",
             "label": "Acceslibre (France)",
-            "attribution": "&copy; <a href=\"https://www.ign.fr/\" target=\"_blank\" rel=\"noopener\">IGN</a> / <a href=\"https://geoservices.ign.fr/\" target=\"_blank\" rel=\"noopener\">Géoplateforme</a> &middot; données <a href=\"https://acceslibre.beta.gouv.fr/\" target=\"_blank\" rel=\"noopener\">Acceslibre</a>"
+            "attribution": "&copy; <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\" rel=\"noopener\">OpenStreetMap</a> &middot; <a href=\"https://carto.com/attributions\" target=\"_blank\" rel=\"noopener\">CARTO</a> &middot; données <a href=\"https://acceslibre.beta.gouv.fr/\" target=\"_blank\" rel=\"noopener\">Acceslibre</a>"
           }
           EOF
 

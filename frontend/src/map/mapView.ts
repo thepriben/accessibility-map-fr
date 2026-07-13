@@ -1,7 +1,8 @@
 import maplibregl, { Map as MlMap, GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Protocol } from 'pmtiles';
-import { INITIAL_VIEW, asset } from '../config';
+import { INITIAL_VIEW, asset, basemapTiles } from '../config';
+import { getTheme } from '../theme';
 import { state } from '../state';
 import type { DataConfig, Place, PlaceProperties } from '../types';
 import { baseStyle } from './style';
@@ -34,7 +35,7 @@ export async function initMap(
 
   map = new maplibregl.Map({
     container: 'map',
-    style: baseStyle(),
+    style: baseStyle(getTheme()),
     center: INITIAL_VIEW.center,
     zoom: INITIAL_VIEW.zoom,
     attributionControl: false,
@@ -72,20 +73,42 @@ export async function initMap(
  * semi-transparent : un polygone couvrant le monde, troue a l'emplacement de
  * la France. La geometrie est pre-calculee dans france-mask.geojson.
  */
+function maskPaint(theme: string): { color: string; opacity: number } {
+  return theme === 'dark'
+    ? { color: '#05070a', opacity: 0.6 }
+    : { color: '#f2efe8', opacity: 0.68 };
+}
+
 async function addFranceMask(m: MlMap): Promise<void> {
   try {
     const res = await fetch(asset('data/france-mask.geojson'));
     if (!res.ok) return;
     const mask = (await res.json()) as GeoJSON.GeoJSON;
+    const { color, opacity } = maskPaint(getTheme());
     m.addSource('france-mask', { type: 'geojson', data: mask });
     m.addLayer({
       id: 'france-mask',
       type: 'fill',
       source: 'france-mask',
-      paint: { 'fill-color': '#e9edf1', 'fill-opacity': 0.72 },
+      paint: { 'fill-color': color, 'fill-opacity': opacity },
     });
   } catch {
     /* masque optionnel : on ignore si indisponible */
+  }
+}
+
+/** Bascule le fond de carte + voile selon le theme (sans recreer la carte). */
+export function updateMapTheme(theme: string): void {
+  if (!map) return;
+  const src = map.getSource('basemap') as maplibregl.RasterTileSource | undefined;
+  src?.setTiles?.(basemapTiles(theme));
+  if (map.getLayer('bg')) {
+    map.setPaintProperty('bg', 'background-color', theme === 'dark' ? '#0c0f14' : '#eae7df');
+  }
+  if (map.getLayer('france-mask')) {
+    const { color, opacity } = maskPaint(theme);
+    map.setPaintProperty('france-mask', 'fill-color', color);
+    map.setPaintProperty('france-mask', 'fill-opacity', opacity);
   }
 }
 

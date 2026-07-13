@@ -7,6 +7,7 @@ import {
   getMap,
   initMap,
   nearestPlaceToCenter,
+  updateMapTheme,
 } from './map/mapView';
 import { autoEnter3D, closePlacePanel, openPlacePanel } from './neighborhood/placePanel';
 import { exitScene3D, isScene3DActive, refreshScene3DTheme } from './transition/transition';
@@ -132,6 +133,9 @@ async function boot(): Promise<void> {
 }
 
 initTheme();
-onThemeChange(() => refreshScene3DTheme());
+onThemeChange((t) => {
+  updateMapTheme(t);
+  refreshScene3DTheme();
+});
 setupTabs();
 void boot();

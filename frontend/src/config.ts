@@ -22,19 +22,25 @@ export const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
  * par defaut). On cite le fond de carte et les donnees, comme l'exige la licence.
  */
 export const MAP_ATTRIBUTION =
-  '&copy; <a href="https://www.ign.fr/" target="_blank" rel="noopener">IGN</a> / ' +
-  '<a href="https://geoservices.ign.fr/" target="_blank" rel="noopener">Géoplateforme</a> &middot; ' +
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> &middot; ' +
+  '<a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a> &middot; ' +
   'données <a href="https://acceslibre.beta.gouv.fr/" target="_blank" rel="noopener">Acceslibre</a>';
 
 /**
- * Fond de carte sobre et en francais : Plan IGN v2 (Geoplateforme, ouvert, sans
- * cle). Cartographie neutre a toponymie francaise, ideale pour la lisibilite.
+ * Fond de carte sobre facon dataroads : CARTO Positron (clair) / Dark Matter
+ * (sombre). Tuiles raster legeres, toponymie locale (francaise en France),
+ * cartographie tres neutre qui laisse ressortir les points.
  */
-export const BASEMAP_TILES = [
-  'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0' +
-    '&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&TILEMATRIXSET=PM' +
-    '&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
-];
+export const BASEMAP_TILES_LIGHT = ['a', 'b', 'c', 'd'].map(
+  (s) => `https://${s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png`
+);
+export const BASEMAP_TILES_DARK = ['a', 'b', 'c', 'd'].map(
+  (s) => `https://${s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png`
+);
+
+export function basemapTiles(theme: string): string[] {
+  return theme === 'dark' ? BASEMAP_TILES_DARK : BASEMAP_TILES_LIGHT;
+}
 
 /** Vue initiale (France metropolitaine). */
 export const INITIAL_VIEW = { center: [2.6, 46.7] as [number, number], zoom: 5.2 };
