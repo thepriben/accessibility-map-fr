@@ -70,10 +70,21 @@ export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
     mod.start_neighborhood(CANVAS_ID, JSON.stringify(payload));
     return true;
   } catch (err) {
+    // winit/Bevy sur wasm "sort" de sa boucle run() en levant une exception de
+    // controle de flux (la scene continue ensuite via requestAnimationFrame).
+    // Ce n'est PAS une erreur : sans ce filtre, on fermait la 3D a tort.
+    if (isControlFlowSignal(err)) return true;
     console.error('Echec du lancement de la scene 3D', err);
     exitScene3D();
     return false;
   }
+}
+
+/** Vrai si l'exception est le signal de controle de flux winit (benin). */
+function isControlFlowSignal(err: unknown): boolean {
+  const msg =
+    typeof err === 'string' ? err : ((err as { message?: string } | null)?.message ?? '');
+  return /control flow|isn't actually an error/i.test(msg);
 }
 
 /** Resynchronise le thème de la scène 3D si elle est affichée (relance légère). */
