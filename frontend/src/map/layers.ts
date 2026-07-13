@@ -5,25 +5,79 @@ export const CLUSTER_LAYER = 'clusters';
 export const CLUSTER_COUNT_LAYER = 'cluster-count';
 export const POINT_LAYER = 'unclustered';
 
-/** Couleur d'un point selon l'accessibilite fauteuil (vert / orange / gris). */
-const pointColor: ExpressionSpecification = [
+/**
+ * Icone d'epingle d'un node isole selon l'accessibilite fauteuil.
+ * Palette sans vert (bleu / orange / ardoise) pour ne pas confondre avec les
+ * grappes et rester lisible.
+ */
+const pinImage: ExpressionSpecification = [
   'case',
   ['==', ['get', 'wheelchairEntrance'], true],
-  '#1f9d55',
+  'pin-ok',
   ['==', ['get', 'wheelchairEntrance'], false],
-  '#d97706',
-  '#8a94a6',
+  'pin-no',
+  'pin-unknown',
 ];
 
+// Grappes : degrade indigo (pas de vert), taille selon le nombre de points.
 const clusterColor: ExpressionSpecification = [
   'step',
   ['get', 'point_count'],
-  '#7cc6a6',
+  '#a5b4fc',
   25,
-  '#3f9e78',
+  '#6366f1',
   100,
-  '#2e7d5b',
+  '#4338ca',
 ];
+
+const PINS: { id: string; color: string }[] = [
+  { id: 'pin-ok', color: '#2563eb' },
+  { id: 'pin-no', color: '#ea580c' },
+  { id: 'pin-unknown', color: '#64748b' },
+];
+
+/**
+ * Dessine une epingle (goutte + pastille blanche) sur un canvas et l'enregistre
+ * comme image de la carte. Repere non ambigu pour un lieu unitaire.
+ */
+function pinImageData(color: string): { width: number; height: number; data: Uint8ClampedArray } {
+  const s = 2; // rendu 2x pour la nettete (pixelRatio: 2)
+  const w = 26 * s;
+  const h = 34 * s;
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext('2d')!;
+  const cx = w / 2;
+  const cy = 13 * s;
+  const r = 11 * s;
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, Math.PI, 0, false);
+  ctx.lineTo(cx, h - s);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 2 * s;
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, 4.2 * s, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+
+  const img = ctx.getImageData(0, 0, w, h);
+  return { width: w, height: h, data: img.data };
+}
+
+function ensurePinIcons(map: MlMap): void {
+  for (const { id, color } of PINS) {
+    if (!map.hasImage(id)) {
+      map.addImage(id, pinImageData(color), { pixelRatio: 2 });
+    }
+  }
+}
 
 const clusterRadius: ExpressionSpecification = [
   'step',
@@ -63,6 +117,7 @@ export function addPmtilesClusters(map: MlMap, pmtilesUrl: string, sourceLayer: 
 function addClusterLayers(map: MlMap, sourceLayer?: string): void {
   const src = sourceLayer ? { 'source-layer': sourceLayer } : {};
   const hasCount: ExpressionSpecification = ['has', 'point_count'];
+  ensurePinIcons(map);
 
   map.addLayer({
     id: CLUSTER_LAYER,
@@ -103,15 +158,16 @@ function addClusterLayers(map: MlMap, sourceLayer?: string): void {
 
   map.addLayer({
     id: POINT_LAYER,
-    type: 'circle',
+    type: 'symbol',
     source: SRC_ID,
     ...src,
     filter: ['!', hasCount],
-    paint: {
-      'circle-color': pointColor,
-      'circle-radius': 6,
-      'circle-stroke-width': 1.5,
-      'circle-stroke-color': '#ffffff',
+    layout: {
+      'icon-image': pinImage,
+      'icon-size': 1,
+      'icon-anchor': 'bottom',
+      'icon-allow-overlap': true,
+      'icon-ignore-placement': true,
     },
   });
 }
