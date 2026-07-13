@@ -73,6 +73,11 @@ export class ClusterClient {
     const r = await this.call({ type: 'place', i });
     return (r.place as Place | null) ?? null;
   }
+
+  async search(q: string, limit: number): Promise<ListResult> {
+    const r = await this.call({ type: 'search', q, limit });
+    return { total: r.total as number, places: r.places as Place[] };
+  }
 }
 
 /** Type d'assistance : les properties renvoyees par le worker sont des PlaceProperties. */

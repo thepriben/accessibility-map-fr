@@ -133,6 +133,48 @@ a { color: var(--focus); }
   padding: 16px;
   overflow-y: auto;
 }
+/* Recherche texte unique (nom / ville / code postal) */
+.search { position: relative; margin: 0 0 16px; }
+.search-label { display: block; font-weight: 600; color: var(--muted); margin: 0 0 6px; font-size: 0.9rem; }
+.search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+.search-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.search-results {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 4px;
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.search-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.search-item:hover,
+.search-item[aria-selected='true'] { background: var(--soft); }
+.si-name { font-weight: 600; color: var(--ink); line-height: 1.2; }
+.si-loc { font-size: 0.8rem; color: var(--muted); }
+
 .filters-title { font-size: 1rem; margin: 0 0 12px; }
 .filter-group { border: 0; padding: 0; margin: 0 0 16px; }
 .filter-group legend { font-weight: 600; color: var(--muted); padding: 0 0 6px; }

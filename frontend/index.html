@@ -29,8 +29,25 @@
     </header>
 
     <main id="main">
-      <!-- Panneau de filtres par critere d'accessibilite -->
-      <aside id="filters" class="filters" aria-label="Filtres d'accessibilité"></aside>
+      <!-- Panneau lateral : recherche + filtres par critere d'accessibilite -->
+      <aside id="filters" class="filters" aria-label="Recherche et filtres d'accessibilité">
+        <div id="search" class="search">
+          <label for="search-input" class="search-label">Rechercher un lieu</label>
+          <input
+            id="search-input"
+            class="search-input"
+            type="search"
+            placeholder="Nom, ville, code postal…"
+            autocomplete="off"
+            role="combobox"
+            aria-expanded="false"
+            aria-controls="search-results"
+            aria-autocomplete="list"
+          />
+          <ul id="search-results" class="search-results" role="listbox" aria-label="Résultats de recherche" hidden></ul>
+        </div>
+        <div id="filters-body"></div>
+      </aside>
 
       <!-- Vue carte 2D -->
       <section id="view-map" class="view view-map" role="tabpanel" aria-labelledby="tab-map">

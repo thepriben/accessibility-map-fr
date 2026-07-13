@@ -21,6 +21,25 @@ let data: Columnar | null = null;
 let index: Supercluster | null = null;
 let activeBits: number[] = [];
 let filteredTotal = 0;
+// Index texte normalise (nom + commune + code postal + activite), construit a la
+// premiere recherche pour ne pas ralentir l'init.
+let haystack: string[] | null = null;
+
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function ensureHaystack(): void {
+  if (haystack) return;
+  const d = data!;
+  haystack = new Array(d.n);
+  for (let i = 0; i < d.n; i += 1) {
+    haystack[i] = normalize(`${d.nom[i]} ${d.com[i] || ''} ${d.cp[i] || ''} ${d.act[i] || ''}`);
+  }
+}
 
 function passes(i: number): boolean {
   const d = data!;
@@ -135,6 +154,31 @@ self.onmessage = async (e: MessageEvent): Promise<void> => {
           if (places.length < limit) places.push(place(i));
         }
         post({ type: 'list', id, total, places });
+        break;
+      }
+      case 'search': {
+        ensureHaystack();
+        const tokens = normalize(String(m.q)).split(/\s+/).filter(Boolean);
+        const limit = m.limit as number;
+        const d = data!;
+        let total = 0;
+        const places: unknown[] = [];
+        if (tokens.length) {
+          for (let i = 0; i < d.n; i += 1) {
+            const h = haystack![i];
+            let ok = true;
+            for (const t of tokens) {
+              if (!h.includes(t)) {
+                ok = false;
+                break;
+              }
+            }
+            if (!ok) continue;
+            total += 1;
+            if (places.length < limit) places.push(place(i));
+          }
+        }
+        post({ type: 'search', id, total, places });
         break;
       }
       case 'place': {

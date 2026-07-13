@@ -5,6 +5,7 @@ import {
   applyFilters,
   currentZoom,
   dataCount,
+  flyToPlace,
   getClusterClient,
   getMap,
   initMap,
@@ -65,6 +66,146 @@ function setupTabs(): void {
   tabList.addEventListener('click', () => activate('list'));
 }
 
+const SEARCH_LIMIT = 20;
+
+function normalizeText(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+/** Recherche texte (nom / ville / code postal / activité) via worker ou memoire. */
+async function searchPlaces(q: string): Promise<Place[]> {
+  const client = getClusterClient();
+  if (client) return (await client.search(q, SEARCH_LIMIT)).places;
+  const tokens = normalizeText(q).split(/\s+/).filter(Boolean);
+  if (!tokens.length) return [];
+  const out: Place[] = [];
+  for (const p of state.allPlaces) {
+    const hay = normalizeText(
+      `${p.properties.nom} ${p.properties.commune ?? ''} ${p.properties.code_postal ?? ''} ${p.properties.activite ?? ''}`
+    );
+    if (tokens.every((t) => hay.includes(t))) {
+      out.push(p);
+      if (out.length >= SEARCH_LIMIT) break;
+    }
+  }
+  return out;
+}
+
+/** Barre de recherche unique : suggestions cliquables + navigation clavier. */
+function setupSearch(): void {
+  const input = document.getElementById('search-input') as HTMLInputElement | null;
+  const results = document.getElementById('search-results') as HTMLUListElement | null;
+  if (!input || !results) return;
+
+  let timer = 0;
+  let items: Place[] = [];
+  let active = -1;
+  let token = 0;
+
+  const close = (): void => {
+    results.hidden = true;
+    results.innerHTML = '';
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    active = -1;
+  };
+
+  const choose = (p: Place): void => {
+    input.value = p.properties.nom;
+    close();
+    flyToPlace(p.lng, p.lat, 18);
+    selectPlace(p);
+  };
+
+  const updateActive = (): void => {
+    [...results.children].forEach((li, i) => li.setAttribute('aria-selected', String(i === active)));
+    if (active >= 0) {
+      input.setAttribute('aria-activedescendant', `search-opt-${active}`);
+      (results.children[active] as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' });
+    } else {
+      input.removeAttribute('aria-activedescendant');
+    }
+  };
+
+  const render = (): void => {
+    results.innerHTML = '';
+    if (!items.length) {
+      results.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    items.forEach((p, i) => {
+      const li = document.createElement('li');
+      li.className = 'search-item';
+      li.id = `search-opt-${i}`;
+      li.setAttribute('role', 'option');
+      li.setAttribute('aria-selected', 'false');
+      const loc = [p.properties.code_postal, p.properties.commune].filter(Boolean).join(' ');
+      const name = document.createElement('span');
+      name.className = 'si-name';
+      name.textContent = p.properties.nom || '(sans nom)';
+      li.appendChild(name);
+      if (loc) {
+        const locEl = document.createElement('span');
+        locEl.className = 'si-loc';
+        locEl.textContent = loc;
+        li.appendChild(locEl);
+      }
+      li.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        choose(p);
+      });
+      results.appendChild(li);
+    });
+    results.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  };
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    window.clearTimeout(timer);
+    if (q.length < 2) {
+      items = [];
+      close();
+      return;
+    }
+    timer = window.setTimeout(async () => {
+      const my = (token += 1);
+      const found = await searchPlaces(q);
+      if (my !== token) return;
+      items = found;
+      active = -1;
+      render();
+    }, 220);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (results.hidden) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      active = Math.min(active + 1, items.length - 1);
+      updateActive();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      active = Math.max(active - 1, 0);
+      updateActive();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (active >= 0) choose(items[active]);
+      else if (items.length) choose(items[0]);
+    } else if (e.key === 'Escape') {
+      close();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!(e.target as HTMLElement).closest('#search')) close();
+  });
+}
+
 /** Liste filtree : via le worker (mode points) ou l'etat memoire (echantillon). */
 async function listResult(): Promise<ListResult> {
   const client = getClusterClient();
@@ -121,7 +262,8 @@ async function boot(): Promise<void> {
       onEnter3D: (place) => void enter3DForPlace(place),
     });
 
-    renderFilters(document.getElementById('filters')!, () => void refreshViews());
+    renderFilters(document.getElementById('filters-body')!, () => void refreshViews());
+    setupSearch();
     await refreshViews();
 
     // Bascule 3D de proximite au fil des deplacements/zoom.
