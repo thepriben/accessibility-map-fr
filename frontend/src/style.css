@@ -76,6 +76,7 @@ a { color: var(--focus); }
   flex: 1 1 auto;
   display: grid;
   grid-template-columns: 300px 1fr;
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 

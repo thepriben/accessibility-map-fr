@@ -51,16 +51,17 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      # Les tuiles France entiere sont hebergees dans le depot PUBLIC de donnees
-      # (le depot applicatif est prive : ses assets de release ne seraient pas
-      # accessibles anonymement). Le navigateur lit cette URL a l'execution, donc
-      # un rafraichissement des tuiles est reflete sans redeploiement.
-      - name: Point config to public France tiles
+      # Tuiles France entiere servies par le GitHub Pages du depot PUBLIC de
+      # donnees, sur la MEME origine (medialoco.github.io) que ce site : pas de
+      # CORS et requetes Range supportees (indispensable a PMTiles). Le navigateur
+      # lit cette URL a l'execution, donc un rafraichissement est reflete sans
+      # redeploiement de l'app.
+      - name: Point config to public France tiles (same-origin Pages)
         run: |
           cat > frontend/public/data/config.json <<'EOF'
           {
             "mode": "pmtiles",
-            "source": "https://github.com/Medialoco/accessibility-map-data/releases/download/data-latest/acceslibre.pmtiles",
+            "source": "https://medialoco.github.io/accessibility-map-data/acceslibre.pmtiles",
             "label": "Acceslibre (France)",
             "attribution": "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> &middot; fond <a href=\"https://carto.com/attributions\">CARTO</a> &middot; données <a href=\"https://acceslibre.beta.gouv.fr/\">Acceslibre</a>"
           }

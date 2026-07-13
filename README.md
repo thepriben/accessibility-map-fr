@@ -76,8 +76,12 @@ sont pas accessibles anonymement, or le site Pages est public). Les donnees etan
 ouvertes (Etalab 2.0), les heberger publiquement est sans risque.
 
 Ce depot de donnees reconstruit les tuiles chaque semaine depuis l'export CSV
-ouvert d'Acceslibre (data.gouv.fr, sans cle). `deploy.yml` pointe `config.json`
-vers l'asset de release ; le navigateur lit cette URL a l'execution, donc un
+ouvert d'Acceslibre (data.gouv.fr, sans cle) et les publie sur **son propre
+GitHub Pages** : `https://medialoco.github.io/accessibility-map-data/acceslibre.pmtiles`.
+Servir depuis la meme origine `medialoco.github.io` que ce site evite tout
+probleme de CORS et supporte les requetes HTTP Range indispensables a PMTiles
+(les assets de release GitHub, eux, n'envoient pas d'en-tete CORS). `deploy.yml`
+pointe `config.json` vers cette URL ; le navigateur la lit a l'execution, donc un
 rafraichissement des tuiles est reflete **sans redeploiement**.
 
 Le dossier `pipeline/` reste utile en local (echantillon, fetch API, Wikidata).
