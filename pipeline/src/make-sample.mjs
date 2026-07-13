@@ -44,7 +44,7 @@ async function main() {
     label: `Échantillon Acceslibre (${commune})`,
     count: features.length,
     attribution:
-      'Données <a href="https://acceslibre.beta.gouv.fr/" target="_blank" rel="noopener">Acceslibre</a> (Étalab 2.0) &middot; fond <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+      '&copy; <a href="https://www.ign.fr/" target="_blank" rel="noopener">IGN</a> / <a href="https://geoservices.ign.fr/" target="_blank" rel="noopener">Géoplateforme</a> &middot; données <a href="https://acceslibre.beta.gouv.fr/" target="_blank" rel="noopener">Acceslibre</a>',
   };
   await writeFile(resolve(DATA_DIR, 'config.json'), JSON.stringify(config, null, 2));
   process.stderr.write(`Echantillon ecrit : ${features.length} features -> ${DATA_DIR}\n`);
