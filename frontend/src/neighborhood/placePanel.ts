@@ -7,6 +7,9 @@ import { buildScenePayload, enterScene3D } from '../transition/transition';
 import { hideLoader, setLoaderMessage, showLoader } from '../ui/loader';
 import type { Place, StreetPhoto } from '../types';
 
+/** Rayon du voisinage exploré (les « derniers mètres » autour du lieu). */
+const NEIGHBORHOOD_RADIUS_M = 25;
+
 /** Voisinage vide (repli) : la 3D s'ouvre quand meme, centree sur le lieu. */
 function emptyNeighborhood(place: Place): NeighborhoodData {
   return {
@@ -52,12 +55,11 @@ export async function openPlacePanel(place: Place): Promise<void> {
 
   // Chargement parallele voisinage + imagerie (a la demande).
   const [neighborhood, photos] = await Promise.all([
-    fetchNeighborhood(place.lng, place.lat, 90).catch(() => null),
+    fetchNeighborhood(place.lng, place.lat, NEIGHBORHOOD_RADIUS_M).catch(() => null),
     fetchNearbyPhotos(place.lng, place.lat, 120).catch(() => [] as StreetPhoto[]),
   ]);
 
   renderImagery(panel, photos);
-  renderNeighborhoodSummary(panel, neighborhood);
   wire3DButton(panel, place, neighborhood, photos);
 }
 
@@ -86,9 +88,6 @@ function skeleton(place: Place): string {
     <h3 class="panel-sub">Imagerie de rue à proximité</h3>
     <div id="panel-imagery" class="panel-imagery"><p class="muted">Recherche Panoramax / Mapillary...</p></div>
 
-    <h3 class="panel-sub">Voisinage (30 derniers mètres)</h3>
-    <div id="panel-neighborhood" class="panel-neighborhood"><p class="muted">Chargement OSM...</p></div>
-
     <div id="panel-3d" class="panel-3d"></div>`;
 }
 
@@ -116,50 +115,6 @@ function renderImagery(panel: HTMLElement, photos: StreetPhoto[]): void {
     <p class="muted">${photos.length} photo(s) &middot; Panoramax et Mapillary</p>`;
 }
 
-function renderNeighborhoodSummary(panel: HTMLElement, nb: NeighborhoodData | null): void {
-  const el = panel.querySelector('#panel-neighborhood');
-  if (!el) return;
-  if (!nb) {
-    el.innerHTML = '<p class="muted">Voisinage OSM indisponible.</p>';
-    return;
-  }
-  const byKind = nb.furniture.reduce<Record<string, number>>((acc, f) => {
-    acc[f.kind] = (acc[f.kind] || 0) + 1;
-    return acc;
-  }, {});
-  const labels: Record<string, string> = {
-    bench: 'bancs',
-    bus_stop: 'arrêts de bus',
-    fountain: 'fontaines',
-    tree: 'arbres',
-    crossing: 'passages piétons',
-    bollard: 'bornes/obstacles',
-    lamp: 'lampadaires',
-    drinking_water: "points d'eau",
-    waste: 'corbeilles',
-  };
-  const poiLabels: Record<string, string> = {
-    hotel: 'hôtels',
-    restaurant: 'restaurants',
-    cafe: 'cafés/bars',
-    community: 'lieux communautaires',
-    worship: 'lieux cultuels',
-  };
-  const byPoi = (nb.pois || []).reduce<Record<string, number>>((acc, p) => {
-    acc[p.kind] = (acc[p.kind] || 0) + 1;
-    return acc;
-  }, {});
-  const chips = [
-    `${nb.buildings.length} bâtiments`,
-    ...Object.entries(byKind).map(([k, n]) => `${n} ${labels[k] || k}`),
-    ...Object.entries(byPoi).map(([k, n]) => `${n} ${poiLabels[k] || k}`),
-    `${nb.paths.length} cheminements/parcs`,
-  ]
-    .map((t) => `<span class="chip">${esc(t)}</span>`)
-    .join('');
-  el.innerHTML = `<div class="chip-row">${chips}</div>`;
-}
-
 function wire3DButton(
   panel: HTMLElement,
   place: Place,
@@ -169,8 +124,7 @@ function wire3DButton(
   const el = panel.querySelector('#panel-3d');
   if (!el || !nb) return;
   el.innerHTML =
-    '<button id="btn-3d" type="button" class="btn-3d">Explorer le voisinage en 3D</button>' +
-    '<p class="muted">Vue 3D sobre (Bevy/WASM). La liste accessible reste l\'alternative textuelle.</p>';
+    '<button id="btn-3d" type="button" class="btn-3d">Explorer le voisinage en 3D</button>';
   el.querySelector('#btn-3d')?.addEventListener('click', async () => {
     const btn = el.querySelector('#btn-3d') as HTMLButtonElement;
     btn.disabled = true;
@@ -191,7 +145,7 @@ export async function autoEnter3D(place: Place): Promise<boolean> {
   showLoader('Chargement du voisinage (OpenStreetMap)…');
   try {
     const [neighborhood, photos] = await Promise.all([
-      fetchNeighborhood(place.lng, place.lat, 90).catch(() => null),
+      fetchNeighborhood(place.lng, place.lat, NEIGHBORHOOD_RADIUS_M).catch(() => null),
       fetchNearbyPhotos(place.lng, place.lat, 120).catch(() => [] as StreetPhoto[]),
     ]);
     // Si Overpass n'a rien renvoye, on bascule quand meme en 3D (voisinage vide)

@@ -65,7 +65,25 @@ export async function initMap(
   }
 
   wireInteractions(cfg, handlers);
+
+  // Garde le spinner tant que les premieres tuiles (grappes) ne sont pas
+  // rendues : sur la France entiere, les PMTiles mettent un instant a arriver.
+  await firstTilesLoaded(map);
   return map;
+}
+
+/** Resout quand la carte a fini de charger/rendre ses tuiles (ou apres delai). */
+function firstTilesLoaded(m: MlMap): Promise<void> {
+  if (m.areTilesLoaded()) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = (): void => {
+      m.off('idle', done);
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, 8000); // filet de securite si un tile echoue
+    m.on('idle', done);
+  });
 }
 
 /**
