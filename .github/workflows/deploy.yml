@@ -4,11 +4,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  # Redeploie automatiquement quand le build des donnees (PMTiles) est termine,
-  # pour que le site bascule sur les tuiles France entiere fraiches.
-  workflow_run:
-    workflows: ["Build data (Acceslibre -> PMTiles)"]
-    types: [completed]
 
 permissions:
   contents: read
@@ -56,21 +51,20 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Point config to production tiles if available
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Les tuiles France entiere sont hebergees dans le depot PUBLIC de donnees
+      # (le depot applicatif est prive : ses assets de release ne seraient pas
+      # accessibles anonymement). Le navigateur lit cette URL a l'execution, donc
+      # un rafraichissement des tuiles est reflete sans redeploiement.
+      - name: Point config to public France tiles
         run: |
-          URL="https://github.com/${{ github.repository }}/releases/download/data-latest/acceslibre.pmtiles"
-          if gh release view data-latest >/dev/null 2>&1; then
-            cat > frontend/public/data/config.json <<EOF
+          cat > frontend/public/data/config.json <<'EOF'
           {
             "mode": "pmtiles",
-            "source": "$URL",
+            "source": "https://github.com/Medialoco/accessibility-map-data/releases/download/data-latest/acceslibre.pmtiles",
             "label": "Acceslibre (France)",
             "attribution": "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> &middot; fond <a href=\"https://carto.com/attributions\">CARTO</a> &middot; données <a href=\"https://acceslibre.beta.gouv.fr/\">Acceslibre</a>"
           }
           EOF
-          fi
 
       - name: Build frontend
         working-directory: frontend

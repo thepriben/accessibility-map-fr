@@ -69,10 +69,18 @@ proprement).
 
 ## Donnees en production (France entiere)
 
-Le workflow `data.yml` (secret `ACCESLIBRE_API_KEY`) recupere l'integralite des
-ERP, genere les PMTiles avec [tippecanoe](https://github.com/felt/tippecanoe) et
-les publie dans la release `data-latest`. Le workflow `deploy.yml` bascule alors
-`config.json` en mode `pmtiles` pointant vers cette release.
+Les tuiles PMTiles France entiere sont hebergees dans un depot **public** dedie,
+[Medialoco/accessibility-map-data](https://github.com/Medialoco/accessibility-map-data),
+car ce depot applicatif est **prive** (les assets de release d'un depot prive ne
+sont pas accessibles anonymement, or le site Pages est public). Les donnees etant
+ouvertes (Etalab 2.0), les heberger publiquement est sans risque.
+
+Ce depot de donnees reconstruit les tuiles chaque semaine depuis l'export CSV
+ouvert d'Acceslibre (data.gouv.fr, sans cle). `deploy.yml` pointe `config.json`
+vers l'asset de release ; le navigateur lit cette URL a l'execution, donc un
+rafraichissement des tuiles est reflete **sans redeploiement**.
+
+Le dossier `pipeline/` reste utile en local (echantillon, fetch API, Wikidata).
 
 ## Secrets a configurer (Settings > Secrets and variables > Actions)
 
