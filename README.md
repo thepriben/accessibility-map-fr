@@ -8,6 +8,8 @@ voisinage immédiat en 3D pour anticiper l'accès avant de s'y rendre.
 
 > Travail en cours, mené en collaboration avec [@JLZIMMERMANN](https://github.com/JLZIMMERMANN).
 
+![Vue 3D du voisinage d'un lieu (Grand Marché de Vichy) : bâtiments, trottoirs, passages piétons, arrêts de bus, places PMR et bancs, avec la fiche d'accessibilité.](docs/screenshot-3d.png)
+
 ## Fonctionnalités
 
 - **Carte 2D** (MapLibre GL) : regroupement (clustering) des établissements
