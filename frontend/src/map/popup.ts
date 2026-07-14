@@ -15,6 +15,8 @@ function esc(s: unknown): string {
 export interface PopupHandlers {
   onEnter3D: (place: Place) => void;
   onDetails: (place: Place) => void;
+  /** Appele a la fermeture du popup (sert a retirer le halo de selection). */
+  onClose?: () => void;
 }
 
 /** Affiche un popup carto avec les infos Acceslibre du lieu + actions (3D / fiche). */
@@ -63,6 +65,7 @@ export function showPlacePopup(
     .setLngLat([place.lng, place.lat])
     .setDOMContent(el)
     .addTo(map);
+  popup.on('close', () => handlers.onClose?.());
 }
 
 export function closePlacePopup(): void {

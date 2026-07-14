@@ -6,7 +6,7 @@ statique (GitHub Pages) pensé pour les personnes en situation de handicap et
 leurs accompagnants : on repère un lieu sur la carte, puis on explore son
 voisinage immédiat en 3D pour anticiper l'accès avant de s'y rendre.
 
-Projet réalisé dans le cadre d'un concours sur le handicap.
+> Travail en cours, mené en collaboration avec [@JLZIMMERMANN](https://github.com/JLZIMMERMANN).
 
 ## Fonctionnalités
 

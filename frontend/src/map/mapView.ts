@@ -19,10 +19,20 @@ import {
 
 const PM_SOURCE_LAYER = 'acceslibre';
 
+// Surlignage du lieu selectionne : un halo pulsant pose exactement sur le point,
+// au-dessus des epingles. Indispensable quand plusieurs markers se chevauchent
+// (ex. un monument) : on voit sans ambiguite lequel est selectionne.
+const HL_SRC = 'selected-place';
+const HL_PULSE = 'selected-pulse';
+const HL_RING = 'selected-ring';
+const HL_COLOR = '#e11d48'; // rose vif, distinct des epingles (bleu/orange/ardoise)
+const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+
 let map: MlMap | null = null;
 let cluster: ClusterClient | null = null;
 let totalCount = 0;
 let queryToken = 0;
+let hlRAF = 0;
 
 export function getMap(): MlMap | null {
   return map;
@@ -88,9 +98,86 @@ export async function initMap(
     wireInteractions(cfg, handlers);
   }
 
+  // Calque de surlignage : ajoute en dernier -> dessine au-dessus des epingles.
+  ensureHighlightLayers(map);
+
   // Garde le spinner tant que les premieres grappes ne sont pas rendues.
   await firstTilesLoaded(map);
   return map;
+}
+
+/** Cree (une seule fois) la source + les couches du halo de selection. */
+function ensureHighlightLayers(m: MlMap): void {
+  if (m.getSource(HL_SRC)) return;
+  m.addSource(HL_SRC, { type: 'geojson', data: EMPTY_FC });
+  // Onde pulsante (derriere l'anneau) : attire l'oeil sur le point exact.
+  m.addLayer({
+    id: HL_PULSE,
+    type: 'circle',
+    source: HL_SRC,
+    paint: {
+      'circle-radius': 13,
+      'circle-color': HL_COLOR,
+      'circle-opacity': 0.45,
+      'circle-stroke-width': 0,
+    },
+  });
+  // Anneau fixe : cercle net centre sur le lieu, centre transparent (l'epingle
+  // reste visible dessous).
+  m.addLayer({
+    id: HL_RING,
+    type: 'circle',
+    source: HL_SRC,
+    paint: {
+      'circle-radius': 13,
+      'circle-color': HL_COLOR,
+      'circle-opacity': 0.14,
+      'circle-stroke-width': 2.5,
+      'circle-stroke-color': HL_COLOR,
+    },
+  });
+}
+
+function startPulse(): void {
+  if (hlRAF) return;
+  const t0 = performance.now();
+  const step = (now: number): void => {
+    if (!map || !map.getLayer(HL_PULSE)) {
+      hlRAF = 0;
+      return;
+    }
+    const k = ((now - t0) % 1400) / 1400; // 0 -> 1 en boucle
+    map.setPaintProperty(HL_PULSE, 'circle-radius', 12 + k * 24);
+    map.setPaintProperty(HL_PULSE, 'circle-opacity', 0.5 * (1 - k));
+    hlRAF = requestAnimationFrame(step);
+  };
+  hlRAF = requestAnimationFrame(step);
+}
+
+function stopPulse(): void {
+  if (hlRAF) {
+    cancelAnimationFrame(hlRAF);
+    hlRAF = 0;
+  }
+}
+
+/** Surligne le lieu selectionne (halo pulsant) a la position donnee. */
+export function highlightPlace(lng: number, lat: number): void {
+  if (!map) return;
+  ensureHighlightLayers(map);
+  const src = map.getSource(HL_SRC) as GeoJSONSource | undefined;
+  src?.setData({
+    type: 'FeatureCollection',
+    features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] }, properties: {} }],
+  });
+  startPulse();
+}
+
+/** Retire le halo de selection. */
+export function clearHighlight(): void {
+  stopPulse();
+  const src = map?.getSource(HL_SRC) as GeoJSONSource | undefined;
+  src?.setData(EMPTY_FC);
 }
 
 /**
@@ -210,6 +297,7 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
         const place: Place = { properties: props, lng: coords[0], lat: coords[1] };
         const note = `${count} lieux à cet endroit · exemple ci-dessous`;
         showPlacePopup(map!, place, handlers, note);
+        highlightPlace(coords[0], coords[1]);
       } else {
         map!.easeTo({ center: coords, zoom: Math.min(z + 2.5, 18) });
       }
@@ -222,6 +310,9 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
     const [lng, lat] = (feat.geometry as GeoJSON.Point).coordinates as [number, number];
     const place: Place = { properties: feat.properties as unknown as PlaceProperties, lng, lat };
     showPlacePopup(map!, place, handlers);
+    // Apres l'ouverture du popup (qui retire l'eventuel popup precedent et
+    // declenche son 'close' -> efface le halo) : on pose le halo sur ce lieu.
+    highlightPlace(lng, lat);
   });
 
   for (const layer of [CLUSTER_LAYER, POINT_LAYER]) {

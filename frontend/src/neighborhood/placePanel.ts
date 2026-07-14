@@ -1,6 +1,6 @@
 import { knownCriteria } from '../a11y';
 import { fetchNeighborhood, type NeighborhoodData } from '../data/overpass';
-import { flyToPlace } from '../map/mapView';
+import { clearHighlight, flyToPlace, highlightPlace } from '../map/mapView';
 import { state } from '../state';
 import { buildScenePayload, enterScene3D, prefetchScene3D } from '../transition/transition';
 import { hideLoader, showLoader } from '../ui/loader';
@@ -36,6 +36,7 @@ export async function openPlacePanel(place: Place): Promise<void> {
   if (!panel) return;
   state.setSelected(place.properties.uuid);
   flyToPlace(place.lng, place.lat, 17);
+  highlightPlace(place.lng, place.lat);
 
   panel.hidden = false;
   panel.innerHTML = skeleton(place);
@@ -69,6 +70,7 @@ export function closePlacePanel(): void {
     panel.innerHTML = '';
   }
   state.setSelected(null);
+  clearHighlight();
 }
 
 function skeleton(place: Place): string {

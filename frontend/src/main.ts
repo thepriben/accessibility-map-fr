@@ -1,6 +1,7 @@
 import { loadDataConfig, loadGeoJson } from './data/dataSource';
 import { MAX_RENDER, renderAccessibleList, type ListResult } from './accessible/accessibleView';
 import {
+  clearHighlight,
   currentBbox,
   currentZoom,
   dataCount,
@@ -343,6 +344,12 @@ async function boot(): Promise<void> {
     const map = await initMap(cfg, fc, {
       onDetails: selectPlace,
       onEnter3D: (place) => void enter3DForPlace(place),
+      // Fermeture du popup : on retire le halo sauf si la fiche detaillee est
+      // ouverte (elle gere alors son propre surlignage).
+      onClose: () => {
+        const panel = document.getElementById('place-panel');
+        if (!panel || panel.hidden) clearHighlight();
+      },
     });
 
     setupSearch();
