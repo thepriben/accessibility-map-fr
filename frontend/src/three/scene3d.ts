@@ -160,10 +160,42 @@ function normName(s: string | null | undefined): string {
     .trim();
 }
 
+// Mots-outils ignorés dans le rapprochement de noms (articles, prépositions,
+// génériques trop courants) pour ne comparer que les mots porteurs de sens.
+const NAME_STOPWORDS = new Set([
+  'de', 'du', 'des', 'la', 'le', 'les', 'un', 'une', 'et', 'au', 'aux', 'a',
+  'the', 'of', 'chez',
+]);
+
+/** Mots significatifs d'un nom (>= 3 lettres, hors mots-outils). */
+function nameTokens(s: string | null | undefined): string[] {
+  return normName(s)
+    .split(' ')
+    .filter((t) => t.length >= 3 && !NAME_STOPWORDS.has(t));
+}
+
+/** Distance (m) du centroïde de l'empreinte locale à l'origine (le lieu visé). */
+function ringCentroidDist(ring: [number, number][]): number {
+  let sx = 0;
+  let sy = 0;
+  for (const [x, y] of ring) {
+    sx += x;
+    sy += y;
+  }
+  const n = ring.length || 1;
+  return Math.hypot(sx / n, sy / n);
+}
+
 /**
- * Choisit le bâtiment cible : d'abord par correspondance de nom OSM (name=) avec
- * le nom du lieu Access'libre (le plus fiable), sinon par le bâtiment dont
- * l'empreinte contient le point. Retourne l'index dans le tableau, ou -1.
+ * Choisit le bâtiment cible avec un rapprochement de noms « intelligent » :
+ *  1. nom OSM (name=) identique au nom Access'libre ;
+ *  2. bâtiment contenant le point du lieu ET partageant au moins un mot
+ *     significatif (très fiable : bon endroit + bon nom, ex. « Marché couvert »
+ *     ↔ « Grand Marché de Vichy ») ;
+ *  3. meilleur recoupement de mots significatifs (>= 2 mots communs, ou un nom
+ *     entièrement inclus dans l'autre), le plus proche du centre en cas d'ex æquo ;
+ *  4. repli géométrique : bâtiment dont l'empreinte contient le point.
+ * Retourne l'index dans le tableau, ou -1.
  */
 function pickTargetBuilding(
   buildings: OsmBuilding[],
@@ -171,20 +203,57 @@ function pickTargetBuilding(
   toLocal: (lng: number, lat: number) => [number, number]
 ): number {
   const target = normName(placeNom);
+  const placeToks = nameTokens(placeNom);
+
+  const localRing = (b: OsmBuilding): [number, number][] | null =>
+    b.ring && b.ring.length >= 3 ? b.ring.map((p) => toLocal(p[0], p[1])) : null;
+
+  // 1. Nom exact.
   if (target.length >= 3) {
     for (let i = 0; i < buildings.length; i += 1) {
-      if (normName(buildings[i].name) === target) return i; // nom exact
-    }
-    for (let i = 0; i < buildings.length; i += 1) {
-      const bn = normName(buildings[i].name);
-      if (bn.length >= 3 && (bn.includes(target) || target.includes(bn))) return i; // inclusion
+      if (normName(buildings[i].name) === target) return i;
     }
   }
+
+  // 2. Contenance géométrique + au moins un mot commun.
+  if (placeToks.length) {
+    for (let i = 0; i < buildings.length; i += 1) {
+      const bToks = nameTokens(buildings[i].name);
+      if (!bToks.some((t) => placeToks.includes(t))) continue;
+      const ring = localRing(buildings[i]);
+      if (ring && ringContains(ring, 0, 0)) return i;
+    }
+  }
+
+  // 3. Meilleur recoupement de mots significatifs.
+  if (placeToks.length) {
+    let best = -1;
+    let bestShared = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < buildings.length; i += 1) {
+      const bToks = nameTokens(buildings[i].name);
+      if (!bToks.length) continue;
+      const shared = bToks.filter((t) => placeToks.includes(t)).length;
+      if (shared === 0) continue;
+      // Exiger 2 mots communs, ou qu'un nom soit entièrement inclus dans l'autre
+      // (évite d'accrocher un bâtiment sur un seul mot trop courant).
+      const subset = shared === Math.min(placeToks.length, bToks.length);
+      if (shared < 2 && !subset) continue;
+      const ring = localRing(buildings[i]);
+      const dist = ring ? ringCentroidDist(ring) : Infinity;
+      if (shared > bestShared || (shared === bestShared && dist < bestDist)) {
+        best = i;
+        bestShared = shared;
+        bestDist = dist;
+      }
+    }
+    if (best >= 0) return best;
+  }
+
+  // 4. Repli géométrique.
   for (let i = 0; i < buildings.length; i += 1) {
-    const b = buildings[i];
-    if (!b.ring || b.ring.length < 3) continue;
-    const ring = b.ring.map((p) => toLocal(p[0], p[1]));
-    if (ringContains(ring, 0, 0)) return i; // repli géométrique
+    const ring = localRing(buildings[i]);
+    if (ring && ringContains(ring, 0, 0)) return i;
   }
   return -1;
 }
