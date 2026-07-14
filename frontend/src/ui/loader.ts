@@ -1,5 +1,5 @@
 // Indicateur de chargement global (spinner) pour les operations longues :
-// telechargement des donnees, du voisinage OSM, ou du module 3D (WASM ~10 Mo).
+// telechargement des donnees, du voisinage OSM, ou preparation de la scene 3D.
 
 let count = 0;
 

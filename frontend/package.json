@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Carte d'accessibilite (Acceslibre) - 2D MapLibre + vue accessible + pont vers la 3D Bevy/WASM.",
+  "description": "Carte d'accessibilite (Acceslibre) - 2D MapLibre + vue accessible + vue 3D du voisinage (Three.js).",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
