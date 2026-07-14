@@ -41,7 +41,7 @@ async function main() {
   const res = await fetch(`${WDQS}?format=json&query=${encodeURIComponent(query)}`, {
     headers: {
       Accept: 'application/sparql-results+json',
-      'User-Agent': 'access-map/0.1 (github.com/Medialoco/accessibility-map-fr)',
+      'User-Agent': 'access-map/0.1 (github.com/thepriben/accessibility-map-fr)',
     },
   });
   if (!res.ok) throw new Error(`WDQS HTTP ${res.status}`);

@@ -73,11 +73,10 @@ indisponible, l'application reste pleinement utilisable en 2D.
 
 ## Données en production (France entière)
 
-Les données pré-traitées de toute la France sont hébergées dans un dépôt
-**public** dédié,
-[Medialoco/accessibility-map-data](https://github.com/Medialoco/accessibility-map-data),
-et servies par **son propre GitHub Pages**. Cela évite tout problème de CORS et
-permet les requêtes HTTP par plage : le fichier est chargé une seule fois par le
+Les données pré-traitées de toute la France sont hébergées dans un dépôt dédié,
+[thepriben/accessibility-map-data](https://github.com/thepriben/accessibility-map-data),
+et servies par **son propre GitHub Pages** (`https://thepriben.github.io/accessibility-map-data/`),
+sur la même origine que le site. Le fichier est chargé une seule fois par le
 *Web Worker*, qui répond ensuite instantanément aux requêtes de la carte.
 
 Ce dépôt de données est reconstruit **chaque semaine** depuis l'export CSV ouvert
