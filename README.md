@@ -1,44 +1,55 @@
 # accessibility-map-fr
 
-Carte collaborative de l'accessibilite des lieux publics en France, a partir des
-donnees [Acceslibre](https://acceslibre.beta.gouv.fr/). Site statique (GitHub
-Pages) avec une montee en puissance progressive : carte 2D a grappes, vue liste
-accessible (RGAA), puis vue 3D sobre du voisinage (Bevy/WASM) et imagerie de rue.
+Carte collaborative de l'accessibilité des lieux publics en France, à partir des
+données [Acceslibre](https://acceslibre.beta.gouv.fr/). Il s'agit d'un site
+statique (GitHub Pages) pensé pour les personnes en situation de handicap et
+leurs accompagnants : on repère un lieu sur la carte, puis on explore son
+voisinage immédiat en 3D pour anticiper l'accès avant de s'y rendre.
 
-Projet realise dans le cadre d'un concours sur le handicap.
+Projet réalisé dans le cadre d'un concours sur le handicap.
 
-## Fonctionnalites
+## Fonctionnalités
 
-- **Carte 2D** (MapLibre GL) : clustering des etablissements Acceslibre sur toute
-  la France, filtres par besoin d'accessibilite, attribution custom (sans drapeau
-  Ukraine), fond CARTO sobre.
-- **Vue liste accessible** (RGAA/WCAG) : meme jeu de lieux, navigable au clavier,
-  avec libelles explicites - l'alternative accessible a la carte et a la 3D.
-- **Fiche de lieu** : criteres d'accessibilite, voisinage OSM (les "30 derniers
-  metres"), imagerie de rue a proximite (Panoramax + Mapillary).
-- **Vue 3D** (Rust + Bevy -> WASM) : batiments extrudes (OSM, enrichis Wikidata),
-  mobilier urbain (bancs, arrets de bus, fontaines, arbres, passages pietons),
-  marqueurs d'imagerie orientes par azimut. Repere local ENU par voisinage.
-- **Transition 2D -> 3D** : fondu du canvas Bevy par-dessus la carte, chargement
-  paresseux du module WASM.
+- **Carte 2D** (MapLibre GL) : regroupement (clustering) des établissements
+  Acceslibre sur toute la France, calculé dans un *Web Worker* (Supercluster)
+  pour garder l'interface fluide même avec plusieurs centaines de milliers de
+  points. Fond de carte CARTO sobre, attribution personnalisée, voile atténuant
+  ce qui n'est pas la France (métropole + territoires d'outre-mer).
+- **Recherche unique** : un seul champ pour chercher par nom de lieu, ville ou
+  code postal (accents et casse indifférents). La sélection recentre la carte
+  sur le lieu ou le quartier.
+- **Vue liste accessible** (RGAA/WCAG) : les lieux de l'emprise visible,
+  navigables au clavier avec des libellés explicites — l'alternative textuelle
+  à la carte et à la 3D.
+- **Fiche de lieu** : critères d'accessibilité détaillés et bouton d'entrée dans
+  la vue 3D du voisinage.
+- **Vue 3D du voisinage** (Three.js / WebGL) : les 100 derniers mètres autour du
+  lieu. Bâtiments extrudés (le bâtiment cible, identifié par son nom OSM, est
+  mis en évidence), trottoirs avec relief, passages piétons rayés, cheminements
+  piétons, routes, arrêts de bus, places PMR, parkings et bancs, à partir
+  d'OpenStreetMap (Overpass).
+- **Transition 2D → 3D** : automatique quand on zoome au plus près d'un lieu, ou
+  manuelle via le bouton dédié. Le module 3D et le voisinage sont préchargés
+  pour une bascule quasi instantanée.
 
 ## Architecture
 
 ```
-pipeline/     Scripts Node (build-time) : Acceslibre -> GeoJSON -> PMTiles, Wikidata
-frontend/     App Vite + TypeScript (MapLibre, vue accessible, transition)
-crates/
-  neighborhood3d/   Crate Rust Bevy compilee en WASM (scene 3D ECS)
-.github/workflows/  data.yml (tuiles) + deploy.yml (Pages + WASM)
+pipeline/     Scripts Node (au build) : Acceslibre → GeoJSON → données compactes
+frontend/     Application Vite + TypeScript
+  src/map/         Carte MapLibre, couches, popup
+  src/data/        Chargement + clustering (Web Worker Supercluster), Overpass
+  src/three/       Scène 3D du voisinage (Three.js)
+  src/accessible/  Vue liste accessible (alternative RGAA)
+.github/workflows/  Traitement des données + déploiement GitHub Pages
 ```
 
-Le flux de donnees : la cle API Acceslibre n'est utilisee **qu'au build** (secret
-GitHub Actions), jamais cote navigateur. Les tuiles PMTiles sont publiees comme
-asset de release et lues par MapLibre via des requetes HTTP par plage.
+La clé d'API Acceslibre n'est utilisée **qu'au moment du build** (secret GitHub
+Actions), jamais côté navigateur.
 
-## Developpement local
+## Développement local
 
-### Frontend (mode echantillon, sans cle)
+### Frontend (mode échantillon, sans clé)
 
 ```bash
 cd frontend
@@ -46,62 +57,52 @@ npm install
 npm run dev
 ```
 
-L'app lit `public/data/config.json` + `public/data/sample.geojson` (echantillon
-Paris versionne). Aucune cle requise.
+L'application lit `public/data/config.json` et `public/data/sample.geojson`
+(échantillon parisien versionné). Aucune clé n'est requise.
 
-### Regenerer l'echantillon (necessite la cle Acceslibre)
+### Régénérer l'échantillon (nécessite la clé Acceslibre)
 
 ```bash
 cd pipeline
 ACCESLIBRE_API_KEY=xxx node src/make-sample.mjs --commune Paris --max-pages 14
 ```
 
-### Construire la 3D (Bevy -> WASM)
+La vue 3D fonctionne directement (Three.js est empaqueté avec le frontend) et
+récupère le voisinage à la volée depuis Overpass. Si Overpass est momentanément
+indisponible, l'application reste pleinement utilisable en 2D.
 
-```bash
-# rustup target add wasm32-unknown-unknown
-wasm-pack build crates/neighborhood3d --release --target web \
-  --out-dir ../../frontend/public/wasm --out-name neighborhood3d
-```
+## Données en production (France entière)
 
-Sans ce build, l'app reste pleinement fonctionnelle en 2D (la 3D se degrade
-proprement).
-
-## Donnees en production (France entiere)
-
-Les tuiles PMTiles France entiere sont hebergees dans un depot **public** dedie,
+Les données pré-traitées de toute la France sont hébergées dans un dépôt
+**public** dédié,
 [Medialoco/accessibility-map-data](https://github.com/Medialoco/accessibility-map-data),
-car ce depot applicatif est **prive** (les assets de release d'un depot prive ne
-sont pas accessibles anonymement, or le site Pages est public). Les donnees etant
-ouvertes (Etalab 2.0), les heberger publiquement est sans risque.
+et servies par **son propre GitHub Pages**. Cela évite tout problème de CORS et
+permet les requêtes HTTP par plage : le fichier est chargé une seule fois par le
+*Web Worker*, qui répond ensuite instantanément aux requêtes de la carte.
 
-Ce depot de donnees reconstruit les tuiles chaque semaine depuis l'export CSV
-ouvert d'Acceslibre (data.gouv.fr, sans cle) et les publie sur **son propre
-GitHub Pages** : `https://medialoco.github.io/accessibility-map-data/acceslibre.pmtiles`.
-Servir depuis la meme origine `medialoco.github.io` que ce site evite tout
-probleme de CORS et supporte les requetes HTTP Range indispensables a PMTiles
-(les assets de release GitHub, eux, n'envoient pas d'en-tete CORS). `deploy.yml`
-pointe `config.json` vers cette URL ; le navigateur la lit a l'execution, donc un
-rafraichissement des tuiles est reflete **sans redeploiement**.
+Ce dépôt de données est reconstruit **chaque semaine** depuis l'export CSV ouvert
+d'Acceslibre (data.gouv.fr, sans clé). Les coordonnées sont validées (détection
+des latitude/longitude inversées, filtrage des points hors zone). Comme
+`config.json` pointe vers l'URL des données, un rafraîchissement hebdomadaire est
+pris en compte **sans redéploiement** du site.
 
-Le dossier `pipeline/` reste utile en local (echantillon, fetch API, Wikidata).
+Le dossier `pipeline/` reste utile en local (échantillon, appels à l'API).
 
-## Secrets a configurer (Settings > Secrets and variables > Actions)
+## Secrets à configurer (Settings → Secrets and variables → Actions)
 
-- `ACCESLIBRE_API_KEY` : cle API Acceslibre (a **regenerer** si elle a fuite).
-- `VITE_MAPILLARY_TOKEN` (optionnel) : token Mapillary. Sans lui, seule
-  l'imagerie Panoramax est active (aucune cle requise).
+- `ACCESLIBRE_API_KEY` : clé d'API Acceslibre (à **régénérer** en cas de fuite).
+  Utilisée uniquement au build ; l'export CSV public ne la requiert pas.
 
-## Accessibilite du site
+## Accessibilité du site
 
-Un concours sur le handicap impose que le site soit lui-meme accessible. La 3D
-(canvas WebGL) n'etant pas exploitable au lecteur d'ecran, la **vue liste** offre
-une alternative textuelle complete, navigable au clavier, couvrant les memes
-lieux et criteres.
+Un concours sur le handicap impose que le site soit lui-même accessible. La 3D
+(canvas WebGL) n'étant pas exploitable par un lecteur d'écran, la **vue liste**
+offre une alternative textuelle complète, navigable au clavier, couvrant les
+mêmes lieux et les mêmes critères d'accessibilité.
 
 ## Sources et licences
 
-- Etablissements : Acceslibre (Licence Ouverte / Etalab 2.0).
-- Fonds de carte et voisinage : OpenStreetMap (ODbL), tuiles CARTO.
-- Batiments notables : Wikidata (CC0).
-- Imagerie de rue : Panoramax et Mapillary.
+- Établissements : Acceslibre (Licence Ouverte / Etalab 2.0).
+- Bâtiments, cheminements et mobilier du voisinage : OpenStreetMap (ODbL), via
+  l'API Overpass.
+- Fonds de carte : CARTO (données OpenStreetMap).
