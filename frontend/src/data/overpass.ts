@@ -16,8 +16,7 @@ const OVERPASS_ENDPOINTS = [
  * premiere reponse valide (le miroir le plus rapide gagne). Reduit fortement
  * la latence percue avant l'entree en 3D.
  */
-async function overpassFetch(query: string, timeoutMs = 15000): Promise<any> {
-  const body = 'data=' + encodeURIComponent(query);
+function raceMirrors(body: string, timeoutMs: number): Promise<any> {
   const attempts = OVERPASS_ENDPOINTS.map((url) => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -27,17 +26,44 @@ async function overpassFetch(query: string, timeoutMs = 15000): Promise<any> {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       signal: ctrl.signal,
     })
-      .then((res) => {
+      .then(async (res) => {
         if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
-        return res.json();
+        const json = await res.json();
+        // Certains miroirs renvoient 200 + un `remark` d'erreur/timeout, ou une
+        // reponse a 0 element (rate-limit). On rejette pour laisser un autre
+        // miroir repondre : sinon un miroir "rapide mais casse" gagnerait le
+        // Promise.any et la scene 3D serait vide.
+        const remark = json?.remark ? String(json.remark) : '';
+        if (/error|timed out|timeout|rate_?limit|too many|quota/i.test(remark)) {
+          throw new Error(`Overpass remark: ${remark}`);
+        }
+        if (!Array.isArray(json.elements) || json.elements.length === 0) {
+          throw new Error('Overpass 0 element');
+        }
+        return json;
       })
       .finally(() => clearTimeout(timer));
   });
-  try {
-    return await Promise.any(attempts);
-  } catch {
-    throw new Error('Overpass indisponible');
+  return Promise.any(attempts);
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Interroge Overpass sur tous les miroirs en parallele (le plus rapide et VALIDE
+ * gagne). Une seconde salve est tentee si la premiere echoue entierement, ce qui
+ * fiabilise l'entree en 3D quand un lot de miroirs est momentanement sature.
+ */
+async function overpassFetch(query: string, timeoutMs = 15000, retries = 1): Promise<any> {
+  const body = 'data=' + encodeURIComponent(query);
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await raceMirrors(body, timeoutMs);
+    } catch {
+      if (attempt < retries) await sleep(500);
+    }
   }
+  throw new Error('Overpass indisponible');
 }
 
 export interface OsmBuilding {
@@ -296,6 +322,14 @@ async function fetchNeighborhoodRaw(
     out geom tags;`;
 
   const data = await overpassFetch(query);
+
+  // Réponse sans aucun élément = quasi certainement un échec/rate-limit (une
+  // zone habitée a toujours au moins un bâtiment ou une voie). On lève une
+  // erreur pour NE PAS mettre ce vide en cache (sinon les points voisins le
+  // réutiliseraient et la zone entière paraîtrait vide).
+  if (!Array.isArray(data.elements) || data.elements.length === 0) {
+    throw new Error('Voisinage vide (Overpass)');
+  }
 
   const out: NeighborhoodData = {
     center: { lng, lat },
