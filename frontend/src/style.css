@@ -90,6 +90,21 @@ a { color: var(--focus); }
   font-size: 0.9rem;
 }
 .toggle-3d:hover { border-color: var(--accent); }
+
+.repo-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  text-decoration: none;
+}
+.repo-link:hover { border-color: var(--accent); color: var(--accent); }
+.repo-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .toggle-3d[aria-pressed='true'] {
   background: var(--accent);
   color: var(--accent-ink);
