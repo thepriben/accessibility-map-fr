@@ -94,13 +94,6 @@ Le dossier `pipeline/` reste utile en local (échantillon, appels à l'API).
 - `ACCESLIBRE_API_KEY` : clé d'API Acceslibre (à **régénérer** en cas de fuite).
   Utilisée uniquement au build ; l'export CSV public ne la requiert pas.
 
-## Accessibilité du site
-
-Un concours sur le handicap impose que le site soit lui-même accessible. La 3D
-(canvas WebGL) n'étant pas exploitable par un lecteur d'écran, la **vue liste**
-offre une alternative textuelle complète, navigable au clavier, couvrant les
-mêmes lieux et les mêmes critères d'accessibilité.
-
 ## Sources et licences
 
 - Établissements : Acceslibre (Licence Ouverte / Etalab 2.0).
