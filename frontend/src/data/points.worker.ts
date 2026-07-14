@@ -21,11 +21,6 @@ let data: Columnar | null = null;
 let index: Supercluster | null = null;
 let activeBits: number[] = [];
 let filteredTotal = 0;
-// Agrégats par département (recalculés à chaque (re)build) : servent de premier
-// niveau de regroupement à l'échelle France, avant les grappes fines.
-let deptFeatures: GeoJSON.Feature[] = [];
-// Au-delà de ce zoom, on passe des départements aux grappes Supercluster.
-const DEPT_MAX_ZOOM = 6;
 // Index texte normalise (nom + commune + code postal + activite), construit a la
 // premiere recherche pour ne pas ralentir l'init.
 let haystack: string[] | null = null;
@@ -52,52 +47,19 @@ function passes(i: number): boolean {
   return true;
 }
 
-/** Code département depuis un code postal (DROM sur 3 chiffres, Corse = 20). */
-function deptCode(cp: string): string | null {
-  const c = (cp || '').trim();
-  if (/^9[78]\d/.test(c)) return c.slice(0, 3);
-  if (/^20\d/.test(c)) return '20';
-  const two = c.slice(0, 2);
-  return /^\d{2}$/.test(two) ? two : null;
-}
-
-function abbrev(n: number): string {
-  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
-}
-
 function rebuild(): void {
   const d = data!;
   const feats: Supercluster.PointFeature<{ i: number }>[] = [];
-  const dept = new Map<string, { c: number; slon: number; slat: number }>();
   filteredTotal = 0;
   for (let i = 0; i < d.n; i += 1) {
     if (activeBits.length && !passes(i)) continue;
     filteredTotal += 1;
-    const lon = d.lon[i];
-    const lat = d.lat[i];
     feats.push({
       type: 'Feature',
-      geometry: { type: 'Point', coordinates: [lon, lat] },
+      geometry: { type: 'Point', coordinates: [d.lon[i], d.lat[i]] },
       properties: { i },
     });
-    const code = deptCode(d.cp[i]);
-    if (code) {
-      const a = dept.get(code) ?? { c: 0, slon: 0, slat: 0 };
-      a.c += 1;
-      a.slon += lon;
-      a.slat += lat;
-      dept.set(code, a);
-    }
   }
-  deptFeatures = [...dept.entries()].map(([code, a]) => ({
-    type: 'Feature',
-    geometry: { type: 'Point', coordinates: [a.slon / a.c, a.slat / a.c] },
-    properties: {
-      point_count: a.c,
-      point_count_abbreviated: abbrev(a.c),
-      dept: code,
-    },
-  }));
   // radius plus petit + maxZoom plus bas => les grappes se separent plus tot,
   // donc moins de clics pour atteindre les etablissements individuels.
   index = new Supercluster({ radius: 45, maxZoom: 15, minZoom: 0 });
@@ -153,12 +115,6 @@ self.onmessage = async (e: MessageEvent): Promise<void> => {
       case 'query': {
         const bbox = m.bbox as [number, number, number, number];
         const zoom = m.zoom as number;
-        // A l'echelle France : un regroupement par departement plutot que des
-        // grappes fines (vue d'ensemble plus lisible).
-        if (zoom <= DEPT_MAX_ZOOM) {
-          post({ type: 'features', id, features: deptFeatures });
-          break;
-        }
         const clusters = index!.getClusters(bbox, zoom);
         const features = clusters.map((c) => {
           const props = c.properties as Record<string, unknown>;

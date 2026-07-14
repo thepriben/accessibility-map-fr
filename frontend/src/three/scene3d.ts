@@ -115,6 +115,28 @@ function buildingHeight(b: OsmBuilding): number {
   return Math.min(Math.max(h, 3), 200);
 }
 
+/**
+ * Rétrécit légèrement un anneau (vers son centroïde) : évite que les bâtiments
+ * ne recouvrent la voirie/les trottoirs quand les empreintes OSM les touchent.
+ */
+function insetRing(ring: [number, number][], margin: number): [number, number][] {
+  const n = ring.length;
+  let cx = 0;
+  let cz = 0;
+  for (const [x, z] of ring) {
+    cx += x;
+    cz += z;
+  }
+  cx /= n;
+  cz /= n;
+  return ring.map(([x, z]) => {
+    const dx = cx - x;
+    const dz = cz - z;
+    const len = Math.hypot(dx, dz) || 1;
+    return [x + (dx / len) * margin, z + (dz / len) * margin] as [number, number];
+  });
+}
+
 /** Point-dans-polygone (ray casting) sur un anneau (x, z). */
 function ringContains(ring: [number, number][], px: number, pz: number): boolean {
   let inside = false;
@@ -210,6 +232,109 @@ function ribbon(points: [number, number][], width: number): THREE.BufferGeometry
   geom.setIndex(idx);
   geom.computeVertexNormals();
   return geom;
+}
+
+/** Calcule les bords gauche/droite d'un ruban (offset perpendiculaire). */
+function ribbonEdges(
+  points: [number, number][],
+  width: number
+): { left: [number, number][]; right: [number, number][] } {
+  const hw = width / 2;
+  const left: [number, number][] = [];
+  const right: [number, number][] = [];
+  for (let i = 0; i < points.length; i += 1) {
+    const [x, z] = points[i];
+    const prev = points[Math.max(i - 1, 0)];
+    const next = points[Math.min(i + 1, points.length - 1)];
+    let dx = next[0] - prev[0];
+    let dz = next[1] - prev[1];
+    const len = Math.hypot(dx, dz) || 1;
+    dx /= len;
+    dz /= len;
+    const nx = -dz;
+    const nz = dx;
+    left.push([x + nx * hw, z + nz * hw]);
+    right.push([x - nx * hw, z - nz * hw]);
+  }
+  return { left, right };
+}
+
+/**
+ * Ruban avec une petite épaisseur (trottoir surélevé) : face supérieure à `h`,
+ * murs latéraux et embouts. Même convention de coordonnées que `ribbon`.
+ */
+function ribbonSlab(
+  points: [number, number][],
+  width: number,
+  thickness: number
+): THREE.BufferGeometry | null {
+  if (points.length < 2) return null;
+  const { left, right } = ribbonEdges(points, width);
+  const n = points.length;
+  const pos: number[] = [];
+  const idx: number[] = [];
+  const add = (x: number, y: number, z: number): number => {
+    pos.push(x, y, z);
+    return pos.length / 3 - 1;
+  };
+  const lt: number[] = [];
+  const rt: number[] = [];
+  const lb: number[] = [];
+  const rb: number[] = [];
+  for (let i = 0; i < n; i += 1) {
+    lt.push(add(left[i][0], thickness, left[i][1]));
+    rt.push(add(right[i][0], thickness, right[i][1]));
+    lb.push(add(left[i][0], 0, left[i][1]));
+    rb.push(add(right[i][0], 0, right[i][1]));
+  }
+  for (let i = 0; i < n - 1; i += 1) {
+    idx.push(lt[i], rt[i], lt[i + 1], rt[i], rt[i + 1], lt[i + 1]); // dessus
+    idx.push(lt[i], lt[i + 1], lb[i], lt[i + 1], lb[i + 1], lb[i]); // mur gauche
+    idx.push(rt[i], rb[i], rt[i + 1], rt[i + 1], rb[i], rb[i + 1]); // mur droit
+  }
+  idx.push(lt[0], lb[0], rt[0], rt[0], lb[0], rb[0]); // embout depart
+  const e = n - 1;
+  idx.push(lt[e], rt[e], lb[e], rt[e], rb[e], lb[e]); // embout fin
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geom.setIndex(idx);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+/**
+ * Passage piéton "rayé" : bandes blanches régulières le long de la traversée,
+ * chaque bande perpendiculaire au sens de la marche (façon zébra).
+ */
+function makeCrossing(points: [number, number][], mat: THREE.Material): THREE.Group | null {
+  if (points.length < 2) return null;
+  const g = new THREE.Group();
+  const stripeW = 0.5; // épaisseur d'une bande, le long de la traversée
+  const spacing = 1.0; // pas entre deux bandes
+  const across = 3.2; // longueur d'une bande, en travers
+  const barGeom = new THREE.BoxGeometry(stripeW, 0.05, across);
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const [x0, z0] = points[i];
+    const [x1, z1] = points[i + 1];
+    const dx = x1 - x0;
+    const dz = z1 - z0;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.2) continue;
+    const ux = dx / len;
+    const uz = dz / len;
+    const angle = Math.atan2(-uz, ux);
+    const count = Math.max(1, Math.floor(len / spacing));
+    for (let k = 0; k < count; k += 1) {
+      const t = (k + 0.5) * spacing;
+      if (t > len) break;
+      const bar = new THREE.Mesh(barGeom, mat);
+      bar.position.set(x0 + ux * t, 0.06, z0 + uz * t);
+      bar.rotation.y = angle;
+      bar.receiveShadow = true;
+      g.add(bar);
+    }
+  }
+  return g;
 }
 
 /** Ajoute un marqueur d'entree (pin) a l'origine = point Access'libre visé. */
@@ -348,12 +473,11 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   for (const b of payload.neighborhood.buildings) {
     if (!b.ring || b.ring.length < 3) continue;
     const ring: [number, number][] = b.ring.map((p) => toLocal(p[0], p[1]));
+    for (const [x, z] of ring) maxR = Math.max(maxR, Math.hypot(x, z));
+    // Empreinte legerement retrecie -> les routes/trottoirs restent visibles.
+    const inner = insetRing(ring, 0.6);
     const shape = new THREE.Shape();
-    ring.forEach(([x, z], i) => {
-      if (i === 0) shape.moveTo(x, z);
-      else shape.lineTo(x, z);
-      maxR = Math.max(maxR, Math.hypot(x, z));
-    });
+    inner.forEach(([x, z], i) => (i === 0 ? shape.moveTo(x, z) : shape.lineTo(x, z)));
     const height = buildingHeight(b);
     const geom = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
     geom.rotateX(-Math.PI / 2);
@@ -391,16 +515,45 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     metalness: 0,
     side: THREE.DoubleSide,
   });
+  // Trottoir surélevé (dalle) : couleur claire, faces des deux côtés.
+  const curbMat = new THREE.MeshStandardMaterial({
+    color: th.path,
+    roughness: 0.95,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+  // Bandes blanches des passages piétons.
+  const zebraMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.85 });
   for (const path of payload.neighborhood.paths) {
     if (path.kind === 'park') continue;
     const pts: [number, number][] = path.coords.map((p) => toLocal(p[0], p[1]));
     for (const [x, z] of pts) maxR = Math.max(maxR, Math.hypot(x, z));
+
+    // Passage piéton : bandes blanches rayées posées sur la chaussée.
+    if (path.kind === 'crossing') {
+      const zebra = makeCrossing(pts, zebraMat);
+      if (zebra) scene.add(zebra);
+      continue;
+    }
+
+    // Trottoir : petite épaisseur (dalle surélevée) pour un rendu plus lisible.
+    if (path.kind === 'sidewalk') {
+      const geom = ribbonSlab(pts, 1.6, 0.12);
+      if (!geom) continue;
+      const mesh = new THREE.Mesh(geom, curbMat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      continue;
+    }
+
+    // Routes (larges, asphalte) et footways (rubans plats fins).
     const isRoad = path.kind === 'road';
-    const width = isRoad ? path.width ?? 5 : path.kind === 'sidewalk' ? 1.5 : 1.2;
+    const width = isRoad ? path.width ?? 5 : 1.2;
     const geom = ribbon(pts, width);
     if (!geom) continue;
     const mesh = new THREE.Mesh(geom, isRoad ? roadMat : pathMat);
-    mesh.position.y = isRoad ? 0.03 : 0.06; // trottoirs au-dessus de la chaussee
+    mesh.position.y = isRoad ? 0.03 : 0.06;
     mesh.receiveShadow = true;
     scene.add(mesh);
   }

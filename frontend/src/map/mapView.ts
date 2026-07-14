@@ -183,13 +183,7 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
     const coords = (feat.geometry as GeoJSON.Point).coordinates as [number, number];
     if (cfg.mode === 'points') {
       const here = map!.getZoom() || 5;
-      // Regroupement par departement (vue France) : gros saut direct dans le
-      // departement (niveau ville), pour ne pas multiplier les clics.
-      if (feat.properties?.dept != null) {
-        map!.easeTo({ center: coords, zoom: 11 });
-        return;
-      }
-      // Grappe Supercluster : on saute franchement (au moins +3 niveaux, ou le
+      // Grappe Supercluster : on saute franchement (au moins +4 niveaux, ou le
       // zoom d'expansion si plus grand) pour atteindre vite les etablissements.
       const cid = feat.properties?.cluster_id;
       let target = here + 4;

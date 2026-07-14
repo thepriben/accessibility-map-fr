@@ -1,10 +1,10 @@
 import { knownCriteria } from '../a11y';
 import { fetchNeighborhood, type NeighborhoodData } from '../data/overpass';
-import { findNearbyCommonsPhoto } from '../data/commons';
+import { findNearbyBuildingQid, getWikidataEntity } from '../data/wikidata';
 import { flyToPlace } from '../map/mapView';
 import { state } from '../state';
-import { buildScenePayload, enterScene3D } from '../transition/transition';
-import { hideLoader, setLoaderMessage, showLoader } from '../ui/loader';
+import { buildScenePayload, enterScene3D, prefetchScene3D } from '../transition/transition';
+import { hideLoader, showLoader } from '../ui/loader';
 import type { Place } from '../types';
 
 /** Rayon du voisinage exploré autour du lieu. */
@@ -60,28 +60,64 @@ export async function openPlacePanel(place: Place): Promise<void> {
     () => null
   );
   wire3DButton(panel, place, neighborhood);
-  void renderNearbyPhoto(panel, place);
+  void renderWikidata(panel, place, neighborhood);
 }
 
-/** Affiche une photo Wikimedia Commons proche du lieu (si disponible). */
-async function renderNearbyPhoto(panel: HTMLElement, place: Place): Promise<void> {
-  const el = panel.querySelector('#panel-photo');
+/** Point-dans-polygone (ray casting) sur un anneau [lng,lat]. */
+function ringContains(ring: [number, number][], x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-12) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** QID Wikidata du bâtiment cible (contenant le point), sinon d'un bâtiment voisin. */
+function targetBuildingQid(nb: NeighborhoodData | null, lng: number, lat: number): string | null {
+  if (!nb) return null;
+  for (const b of nb.buildings) {
+    if (b.wikidata && b.ring.length >= 3 && ringContains(b.ring, lng, lat)) return b.wikidata;
+  }
+  for (const b of nb.buildings) {
+    if (b.wikidata) return b.wikidata;
+  }
+  return null;
+}
+
+/** Affiche l'image + infos Wikidata du bâtiment (via son QID OSM), si disponibles. */
+async function renderWikidata(
+  panel: HTMLElement,
+  place: Place,
+  nb: NeighborhoodData | null
+): Promise<void> {
+  const el = panel.querySelector('#panel-wikidata');
   if (!el) return;
 
-  const photo = await findNearbyCommonsPhoto(place.lng, place.lat).catch(() => null);
+  // 1) QID porté par le bâtiment OSM (fiable). 2) sinon, bâtiment Wikidata le
+  //    plus proche des coordonnées (repli filtré sur « bâtiment »).
+  const qid =
+    targetBuildingQid(nb, place.lng, place.lat) ??
+    (await findNearbyBuildingQid(place.lng, place.lat).catch(() => null));
+  if (!qid || panel.hidden) return;
+  const info = await getWikidataEntity(qid).catch(() => null);
   // La fiche a pu être fermée/rouverte entre-temps : on ignore alors le résultat.
-  if (!photo || panel.hidden) return;
+  if (!info || panel.hidden) return;
 
-  const lic = photo.license ? ` &middot; ${esc(photo.license)}` : '';
+  const img = info.imageUrl
+    ? `<a class="wd-photo" href="${esc(info.imageSourceUrl)}" target="_blank" rel="noopener"
+         title="Voir l'original et la licence sur Wikimedia Commons">
+         <img src="${esc(info.imageUrl)}" alt="${esc(info.label ?? 'Bâtiment')}" loading="lazy">
+       </a>`
+    : '';
+
   el.innerHTML = `
-    <h3 class="panel-sub">Photo à proximité</h3>
-    <a class="wd-photo" href="${esc(photo.sourceUrl)}" target="_blank" rel="noopener"
-       title="Voir l'original et la licence sur Wikimedia Commons">
-      <img src="${esc(photo.thumbUrl)}" alt="Photo à proximité : ${esc(photo.title)}" loading="lazy">
-    </a>
-    <p class="wd-links">
-      <a href="${esc(photo.sourceUrl)}" target="_blank" rel="noopener">Wikimedia Commons &nearr;</a>${lic}
-    </p>`;
+    <h3 class="panel-sub">Le bâtiment</h3>
+    ${img}
+    ${info.label ? `<p class="wd-name">${esc(info.label)}</p>` : ''}
+    ${info.description ? `<p class="wd-desc">${esc(info.description)}</p>` : ''}
+    <p class="wd-links"><a href="${esc(info.wikidataUrl)}" target="_blank" rel="noopener">Fiche Wikidata &nearr;</a></p>`;
 }
 
 export function closePlacePanel(): void {
@@ -106,7 +142,7 @@ function skeleton(place: Place): string {
     <h3 class="panel-sub">Accessibilité</h3>
     <ul id="panel-criteria" class="panel-criteria"><li>Chargement...</li></ul>
 
-    <div id="panel-photo" class="panel-wikidata"></div>
+    <div id="panel-wikidata" class="panel-wikidata"></div>
 
     <div id="panel-3d" class="panel-3d"></div>`;
 }
@@ -123,8 +159,9 @@ function wire3DButton(
   el.querySelector('#btn-3d')?.addEventListener('click', async () => {
     const btn = el.querySelector('#btn-3d') as HTMLButtonElement;
     btn.disabled = true;
-    btn.textContent = 'Chargement de la 3D...';
-    showLoader('Préparation de la vue 3D…');
+    btn.textContent = 'Chargement 3D…';
+    prefetchScene3D(); // charge le module 3D en parallele
+    showLoader('Chargement 3D');
     const ok = await enterScene3D(buildScenePayload(place, nb, []));
     hideLoader();
     btn.disabled = false;
@@ -137,9 +174,9 @@ function wire3DButton(
  * puis bascule. Utilisee par la bascule automatique de proximite.
  */
 export async function autoEnter3D(place: Place): Promise<boolean> {
-  showLoader('Chargement des bâtiments (OpenStreetMap)…');
+  showLoader('Chargement 3D');
+  prefetchScene3D(); // module 3D chargé en parallèle du voisinage (Overpass)
   try {
-    // Etape actuelle : batiments seuls (rapide), pas d'imagerie de rue.
     const neighborhood = await fetchNeighborhood(
       place.lng,
       place.lat,
@@ -147,7 +184,6 @@ export async function autoEnter3D(place: Place): Promise<boolean> {
     ).catch(() => null);
     // Si Overpass n'a rien renvoye, on bascule quand meme en 3D (voisinage vide).
     const nb = neighborhood ?? emptyNeighborhood(place);
-    setLoaderMessage('Préparation de la vue 3D…');
     return await enterScene3D(buildScenePayload(place, nb, []));
   } finally {
     hideLoader();

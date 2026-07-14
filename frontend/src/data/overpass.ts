@@ -8,28 +8,33 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.private.coffee/api/interpreter',
 ];
 
-/** POST Overpass avec timeout, en essayant chaque miroir a tour de role. */
-async function overpassFetch(query: string, timeoutMs = 20000): Promise<any> {
-  let lastErr: unknown = null;
-  for (const url of OVERPASS_ENDPOINTS) {
+/**
+ * POST Overpass en interrogeant TOUS les miroirs en parallele : on garde la
+ * premiere reponse valide (le miroir le plus rapide gagne). Reduit fortement
+ * la latence percue avant l'entree en 3D.
+ */
+async function overpassFetch(query: string, timeoutMs = 15000): Promise<any> {
+  const body = 'data=' + encodeURIComponent(query);
+  const attempts = OVERPASS_ENDPOINTS.map((url) => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        body: 'data=' + encodeURIComponent(query),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        signal: ctrl.signal,
-      });
-      if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
-      lastErr = err;
-    } finally {
-      clearTimeout(timer);
-    }
+    return fetch(url, {
+      method: 'POST',
+      body,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      signal: ctrl.signal,
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
+        return res.json();
+      })
+      .finally(() => clearTimeout(timer));
+  });
+  try {
+    return await Promise.any(attempts);
+  } catch {
+    throw new Error('Overpass indisponible');
   }
-  throw lastErr instanceof Error ? lastErr : new Error('Overpass indisponible');
 }
 
 export interface OsmBuilding {
@@ -72,7 +77,7 @@ export interface OsmPoi {
 
 export interface OsmPath {
   id: string;
-  kind: 'sidewalk' | 'footway' | 'park' | 'road';
+  kind: 'sidewalk' | 'footway' | 'park' | 'road' | 'crossing';
   coords: [number, number][];
   /** Largeur indicative (m) pour le rendu, surtout utile pour les routes. */
   width?: number;
@@ -267,6 +272,7 @@ async function fetchNeighborhoodRaw(
       way["building"](${b});
       way["highway"="footway"](${b});
       way["footway"="sidewalk"](${b});
+      way["footway"="crossing"](${b});
       way["highway"="pedestrian"](${b});
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road)$"](${b});
       node["amenity"="bench"](${b});
@@ -362,7 +368,8 @@ async function fetchNeighborhoodRaw(
       let kind: OsmPath['kind'] | null = null;
       let width: number | undefined;
       const rw = roadWidth(tags.highway);
-      if (tags.footway === 'sidewalk') kind = 'sidewalk';
+      if (tags.footway === 'crossing') kind = 'crossing';
+      else if (tags.footway === 'sidewalk') kind = 'sidewalk';
       else if (tags.highway === 'footway' || tags.highway === 'pedestrian') kind = 'footway';
       else if (rw != null) {
         kind = 'road';

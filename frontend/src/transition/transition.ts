@@ -109,22 +109,12 @@ export function exitScene3D(): void {
 }
 
 function sceneUiHtml(payload: ScenePayload): string {
-  const nb = payload.neighborhood;
-  const paths = nb.paths.filter((p) => p.kind !== 'park').length;
-  const extra: string[] = [];
-  if (nb.benches?.length) extra.push(`${nb.benches.length} banc(s)`);
-  if (nb.busStops?.length) extra.push(`${nb.busStops.length} arrêt(s) de bus`);
-  if (nb.parking?.length) extra.push(`${nb.parking.length} place(s) PMR`);
-  const extraLine = extra.length
-    ? `<span class="scene3d-sub">${extra.join(' &middot; ')}</span>`
-    : '';
+  // Bandeau minimal : nom du lieu + retour. Les statistiques et l'aide de
+  // navigation ont été retirées pour une vue plus épurée.
   return `
     <div class="scene3d-bar">
       <div class="scene3d-info">
         <strong>${escapeHtml(payload.place.nom)}</strong>
-        <span class="scene3d-sub">${nb.buildings.length} bâtiment(s) &middot; ${paths} cheminement(s) &middot; rayon 75 m</span>
-        ${extraLine}
-        <span class="scene3d-sub">Glisser = se déplacer &middot; clic droit = pivoter &middot; molette = zoom &middot; flèches = se déplacer</span>
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
     </div>
