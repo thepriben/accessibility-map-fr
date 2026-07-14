@@ -81,11 +81,11 @@ et servies par **son propre GitHub Pages** (`https://thepriben.github.io/accessi
 sur la même origine que le site. Le fichier est chargé une seule fois par le
 *Web Worker*, qui répond ensuite instantanément aux requêtes de la carte.
 
-Ce dépôt de données est reconstruit **chaque semaine** depuis l'export CSV ouvert
-d'Acceslibre (data.gouv.fr, sans clé). Les coordonnées sont validées (détection
-des latitude/longitude inversées, filtrage des points hors zone). Comme
-`config.json` pointe vers l'URL des données, un rafraîchissement hebdomadaire est
-pris en compte **sans redéploiement** du site.
+Ce dépôt de données est reconstruit **chaque jour** (~03:00 heure de Paris) depuis
+l'export CSV ouvert d'Acceslibre (data.gouv.fr, sans clé). Les coordonnées sont
+validées (détection des latitude/longitude inversées, filtrage des points hors
+zone). Comme `config.json` pointe vers l'URL des données, ce rafraîchissement
+quotidien est pris en compte **sans redéploiement** du site.
 
 Le dossier `pipeline/` reste utile en local (échantillon, appels à l'API).
 
