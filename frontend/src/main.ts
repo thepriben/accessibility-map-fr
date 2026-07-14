@@ -11,7 +11,8 @@ import {
   nearestPlaceToCenter,
 } from './map/mapView';
 import { autoEnter3D, closePlacePanel, openPlacePanel } from './neighborhood/placePanel';
-import { exitScene3D, isScene3DActive } from './transition/transition';
+import { exitScene3D, isScene3DActive, prefetchScene3D } from './transition/transition';
+import { prefetchNeighborhood } from './data/overpass';
 import { hideLoader, showLoader } from './ui/loader';
 import { state } from './state';
 import { INITIAL_VIEW } from './config';
@@ -239,6 +240,17 @@ async function refreshViews(): Promise<void> {
 async function maybeAutoEnter3D(): Promise<void> {
   const z = currentZoom();
   if (z < REARM_ZOOM) lastAuto3dUuid = null; // dezoom : on pourra revenir sur ce lieu
+
+  // Prechauffage : juste avant le seuil, on lance le module 3D + le voisinage
+  // du lieu proche pour que l'entree en 3D soit quasi immediate.
+  if (!isScene3DActive() && z >= AUTO_3D_ZOOM - 1 && z < AUTO_3D_ZOOM) {
+    const near = nearestPlaceToCenter(90);
+    if (near) {
+      prefetchScene3D();
+      prefetchNeighborhood(near.lng, near.lat);
+    }
+  }
+
   if (z < AUTO_3D_ZOOM || isScene3DActive()) return;
 
   const place = nearestPlaceToCenter(70);
@@ -286,6 +298,10 @@ function setupViewSwap(): void {
     btn.setAttribute('aria-pressed', String(active));
     btn.textContent = active ? 'Carte 2D' : 'Vue 3D';
     btn.title = active ? 'Revenir à la carte 2D' : 'Basculer en vue 3D du voisinage';
+    // Une seule légende à la fois : on masque celle de la carte 2D en 3D
+    // (la légende 3D est affichée dans l'overlay de la scène).
+    const legend2d = document.getElementById('map-legend');
+    if (legend2d) legend2d.hidden = active;
   };
 
   window.addEventListener('scene3d:toggle', (e) => sync((e as CustomEvent).detail.active === true));

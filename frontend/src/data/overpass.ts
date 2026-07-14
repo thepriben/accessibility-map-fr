@@ -6,6 +6,9 @@ const OVERPASS_ENDPOINTS = [
   OVERPASS_API,
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.osm.jp/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter',
 ];
 
 /**
