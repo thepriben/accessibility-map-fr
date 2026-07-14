@@ -7,7 +7,7 @@ import { hideLoader, showLoader } from '../ui/loader';
 import type { Place } from '../types';
 
 /** Rayon du voisinage exploré autour du lieu. */
-const NEIGHBORHOOD_RADIUS_M = 75;
+const NEIGHBORHOOD_RADIUS_M = 100;
 
 /** Voisinage vide (repli) : la 3D s'ouvre quand meme, centree sur le lieu. */
 function emptyNeighborhood(place: Place): NeighborhoodData {

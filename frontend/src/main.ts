@@ -250,6 +250,7 @@ async function maybeAutoEnter3D(): Promise<void> {
   lastSelectedPlace = place;
   history.replaceState(null, '', `#place=${encodeURIComponent(place.properties.uuid)}`);
   state.setSelected(place.properties.uuid);
+  status(`Passage en 3D : ${place.properties.nom}`);
   const ok = await autoEnter3D(place);
   if (!ok) status('3D indisponible - vue carte conservée.');
 }

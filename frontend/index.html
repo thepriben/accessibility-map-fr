@@ -55,6 +55,16 @@
         <!-- Canvas de la scene 3D (Three.js), superpose et masque par defaut -->
         <canvas id="scene3d" class="scene3d" aria-hidden="true" tabindex="-1"></canvas>
         <div id="scene3d-ui" class="scene3d-ui" hidden></div>
+        <!-- Légende de la carte 2D (bas-gauche) -->
+        <details id="map-legend" class="map-legend" open>
+          <summary>Légende</summary>
+          <ul>
+            <li><span class="lg-dot lg-cluster"></span> Regroupement de lieux (nombre)</li>
+            <li><span class="lg-pin lg-ok"></span> Entrée accessible en fauteuil</li>
+            <li><span class="lg-pin lg-no"></span> Entrée non accessible</li>
+            <li><span class="lg-pin lg-unknown"></span> Accessibilité non renseignée</li>
+          </ul>
+        </details>
       </section>
 
       <!-- Vue liste accessible (RGAA/WCAG) -->
