@@ -100,6 +100,14 @@ self.onmessage = async (e: MessageEvent): Promise<void> => {
         const res = await fetch(m.url as string);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         data = (await res.json()) as Columnar;
+        // Codes postaux : restaure le 0 initial perdu (ex. 1700 -> 01700) pour
+        // l'affichage ET la recherche (dept. 01-09).
+        if (Array.isArray(data.cp)) {
+          for (let i = 0; i < data.cp.length; i += 1) {
+            const c = data.cp[i];
+            if (c && /^\d{4}$/.test(c)) data.cp[i] = `0${c}`;
+          }
+        }
         activeBits = [];
         rebuild();
         post({ type: 'ready', id, count: data.n, criteria: data.criteria });

@@ -91,6 +91,13 @@ export interface OsmParking {
   pmr: boolean;
 }
 
+/** Parking surfacique (amenity=parking) : empreinte au sol à matérialiser. */
+export interface OsmParkingArea {
+  id: string;
+  ring: [number, number][];
+  pmr: boolean;
+}
+
 /** Arrêt de bus : nom de l'arrêt + ligne(s) desservie(s) si connus. */
 export interface OsmBusStop {
   id: string;
@@ -117,6 +124,7 @@ export interface NeighborhoodData {
   pois: OsmPoi[];
   paths: OsmPath[];
   parking: OsmParking[];
+  parkingAreas: OsmParkingArea[];
   busStops: OsmBusStop[];
   benches: OsmBench[];
 }
@@ -274,12 +282,13 @@ async function fetchNeighborhoodRaw(
       way["footway"="sidewalk"](${b});
       way["footway"="crossing"](${b});
       way["highway"="pedestrian"](${b});
-      way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road)$"](${b});
+      way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|road)$"](${b});
       node["amenity"="bench"](${b});
       node["highway"="bus_stop"](${b});
       node["public_transport"="platform"](${b});
       node["amenity"="parking_space"](${b});
       way["amenity"="parking_space"](${b});
+      way["amenity"="parking"](${b});
     );
     out geom tags;`;
 
@@ -292,6 +301,7 @@ async function fetchNeighborhoodRaw(
     pois: [],
     paths: [],
     parking: [],
+    parkingAreas: [],
     busStops: [],
     benches: [],
   };
@@ -308,6 +318,20 @@ async function fetchNeighborhoodRaw(
         height: toNum(tags.height),
         wikidata: tags.wikidata || null,
         name: tags.name || null,
+      });
+    }
+
+    // Parking surfacique (amenity=parking) : empreinte au sol (way ferme).
+    if (
+      el.type === 'way' &&
+      tags.amenity === 'parking' &&
+      Array.isArray(el.geometry) &&
+      el.geometry.length >= 3
+    ) {
+      out.parkingAreas.push({
+        id: `w${el.id}`,
+        ring: el.geometry.map((g: any) => [g.lon, g.lat] as [number, number]),
+        pmr: isDisabledParking(tags),
       });
     }
 

@@ -9,11 +9,9 @@ import {
   getMap,
   initMap,
   nearestPlaceToCenter,
-  updateMapTheme,
 } from './map/mapView';
 import { autoEnter3D, closePlacePanel, openPlacePanel } from './neighborhood/placePanel';
-import { exitScene3D, isScene3DActive, refreshScene3DTheme } from './transition/transition';
-import { initTheme, onThemeChange } from './theme';
+import { exitScene3D, isScene3DActive } from './transition/transition';
 import { hideLoader, showLoader } from './ui/loader';
 import { state } from './state';
 import { INITIAL_VIEW } from './config';
@@ -252,7 +250,6 @@ async function maybeAutoEnter3D(): Promise<void> {
   lastSelectedPlace = place;
   history.replaceState(null, '', `#place=${encodeURIComponent(place.properties.uuid)}`);
   state.setSelected(place.properties.uuid);
-  status(`Passage en 3D : ${place.properties.nom}`);
   const ok = await autoEnter3D(place);
   if (!ok) status('3D indisponible - vue carte conservée.');
 }
@@ -360,10 +357,5 @@ async function boot(): Promise<void> {
   }
 }
 
-initTheme();
-onThemeChange((t) => {
-  updateMapTheme(t);
-  refreshScene3DTheme();
-});
 setupTabs();
 void boot();

@@ -130,11 +130,16 @@ function legendHtml(payload: ScenePayload): string {
     `<li>${sw('#c6c8cc')} Autres bâtiments</li>`,
   ];
   if (nb.paths.some((p) => p.kind === 'road')) items.push(`<li>${sw('#8b9098')} Routes</li>`);
-  if (nb.paths.some((p) => p.kind !== 'road' && p.kind !== 'park'))
-    items.push(`<li>${sw('#e7ecf3')} Trottoirs / cheminements</li>`);
+  if (nb.paths.some((p) => p.kind === 'sidewalk'))
+    items.push(`<li>${sw('#eef1f5')} Trottoirs</li>`);
+  if (nb.paths.some((p) => p.kind === 'footway'))
+    items.push(`<li>${sw('#d7cdba')} Cheminements piétons</li>`);
+  if (nb.paths.some((p) => p.kind === 'crossing'))
+    items.push(`<li>${sw('#f2f2f2')} Passages piétons</li>`);
   if (nb.benches?.length) items.push(`<li>${sw('#9c6b3f')} Bancs</li>`);
   if (nb.busStops?.length) items.push(`<li>${sw('#2b6cb0')} Arrêts de bus</li>`);
   if (nb.parking?.length) items.push(`<li>${sw('#2f6fb0')} Places PMR</li>`);
+  if (nb.parkingAreas?.length) items.push(`<li>${sw('#6b7382')} Parkings</li>`);
   return `
     <details class="scene3d-legend" open>
       <summary>Légende</summary>

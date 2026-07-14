@@ -150,12 +150,52 @@ function ringContains(ring: [number, number][], px: number, pz: number): boolean
   return inside;
 }
 
+/** Normalise un nom pour comparaison (minuscules, sans accents ni ponctuation). */
+function normName(s: string | null | undefined): string {
+  return (s ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Choisit le bâtiment cible : d'abord par correspondance de nom OSM (name=) avec
+ * le nom du lieu Access'libre (le plus fiable), sinon par le bâtiment dont
+ * l'empreinte contient le point. Retourne l'index dans le tableau, ou -1.
+ */
+function pickTargetBuilding(
+  buildings: OsmBuilding[],
+  placeNom: string,
+  toLocal: (lng: number, lat: number) => [number, number]
+): number {
+  const target = normName(placeNom);
+  if (target.length >= 3) {
+    for (let i = 0; i < buildings.length; i += 1) {
+      if (normName(buildings[i].name) === target) return i; // nom exact
+    }
+    for (let i = 0; i < buildings.length; i += 1) {
+      const bn = normName(buildings[i].name);
+      if (bn.length >= 3 && (bn.includes(target) || target.includes(bn))) return i; // inclusion
+    }
+  }
+  for (let i = 0; i < buildings.length; i += 1) {
+    const b = buildings[i];
+    if (!b.ring || b.ring.length < 3) continue;
+    const ring = b.ring.map((p) => toLocal(p[0], p[1]));
+    if (ringContains(ring, 0, 0)) return i; // repli géométrique
+  }
+  return -1;
+}
+
 const COLOR_TARGET = 0xef8b4e; // lieu cible : orange chaud (conserve)
 
 interface Theme {
   bg: number;
   ground: number;
-  path: number; // cheminements pietons (trottoirs / footways)
+  path: number; // trottoirs (sidewalk)
+  foot: number; // cheminements pietons (footway / pedestrian)
   road: number; // chaussee carrossable
   wall: number; // batiments neutres (tous sauf la cible)
   sky: number;
@@ -172,6 +212,7 @@ function themeColors(dark: boolean): Theme {
         bg: 0x0e1219,
         ground: 0x1a1f29,
         path: 0x8b97b1,
+        foot: 0x6f7890,
         road: 0x2c313b,
         wall: 0x3a4150,
         sky: 0x2a3446,
@@ -185,6 +226,7 @@ function themeColors(dark: boolean): Theme {
         bg: 0xe8edf3,
         ground: 0xb9b3a6,
         path: 0xeef1f5,
+        foot: 0xd7cdba,
         road: 0x8b9098,
         wall: 0xc6c8cc,
         sky: 0xeaf1fb,
@@ -337,6 +379,20 @@ function makeCrossing(points: [number, number][], mat: THREE.Material): THREE.Gr
   return g;
 }
 
+/**
+ * Polygone plat (surface au sol) à partir d'un anneau local [x,z]. Même
+ * convention de coordonnées que `ribbon` (pas de miroir) : on pré-inverse z
+ * pour compenser le rotateX(-PI/2).
+ */
+function flatPolygon(ring: [number, number][]): THREE.BufferGeometry | null {
+  if (ring.length < 3) return null;
+  const pts = ring.map(([x, z]) => new THREE.Vector2(x, -z));
+  const shape = new THREE.Shape(pts);
+  const geom = new THREE.ShapeGeometry(shape);
+  geom.rotateX(-Math.PI / 2);
+  return geom;
+}
+
 /** Ajoute un marqueur d'entree (pin) a l'origine = point Access'libre visé. */
 function addEntranceMarker(scene: THREE.Scene, hasTargetBuilding: boolean): void {
   const group = new THREE.Group();
@@ -469,20 +525,30 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     emissiveIntensity: 0.12,
   });
   let maxR = 20;
+  const targetIdx = pickTargetBuilding(
+    payload.neighborhood.buildings,
+    payload.place.nom,
+    toLocal
+  );
   let hasTargetBuilding = false;
-  for (const b of payload.neighborhood.buildings) {
+  for (let bi = 0; bi < payload.neighborhood.buildings.length; bi += 1) {
+    const b = payload.neighborhood.buildings[bi];
     if (!b.ring || b.ring.length < 3) continue;
     const ring: [number, number][] = b.ring.map((p) => toLocal(p[0], p[1]));
     for (const [x, z] of ring) maxR = Math.max(maxR, Math.hypot(x, z));
     // Empreinte legerement retrecie -> les routes/trottoirs restent visibles.
     const inner = insetRing(ring, 0.6);
+    // Le rotateX(-PI/2) applique ensuite inverse le signe de z ; on pre-inverse z
+    // (et on inverse l'ordre pour conserver l'orientation des faces) afin que le
+    // batiment tombe au meme endroit que les routes/trottoirs (pas de miroir).
+    const src = inner.map(([x, z]) => [x, -z] as [number, number]).reverse();
     const shape = new THREE.Shape();
-    inner.forEach(([x, z], i) => (i === 0 ? shape.moveTo(x, z) : shape.lineTo(x, z)));
+    src.forEach(([x, z], i) => (i === 0 ? shape.moveTo(x, z) : shape.lineTo(x, z)));
     const height = buildingHeight(b);
     const geom = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
     geom.rotateX(-Math.PI / 2);
 
-    const isTarget = !hasTargetBuilding && ringContains(ring, 0, 0);
+    const isTarget = bi === targetIdx;
     if (isTarget) hasTargetBuilding = true;
 
     const mesh = new THREE.Mesh(geom, isTarget ? targetMat : wallMat);
@@ -500,15 +566,9 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // empreinte de batiment, et pour s'orienter dans le voisinage.
   addEntranceMarker(scene, hasTargetBuilding);
 
-  // --- Chaussees (routes) et cheminements pietons : rubans plats au sol ---
-  // Les routes sont plus larges et d'une couleur asphalte distincte ; les
-  // trottoirs/footways restent clairs et passent legerement au-dessus.
-  const pathMat = new THREE.MeshStandardMaterial({
-    color: th.path,
-    roughness: 0.95,
-    metalness: 0,
-    side: THREE.DoubleSide,
-  });
+  // --- Chaussees (routes) et cheminements pietons ---
+  // Routes = ruban asphalte plat ; trottoirs = dalle claire surelevee ;
+  // footways = dalle fine teinte "pave".
   const roadMat = new THREE.MeshStandardMaterial({
     color: th.road,
     roughness: 1,
@@ -518,6 +578,14 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // Trottoir surélevé (dalle) : couleur claire, faces des deux côtés.
   const curbMat = new THREE.MeshStandardMaterial({
     color: th.path,
+    roughness: 0.95,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+  // Cheminement piéton (footway) : dalle fine, teinte "pavé" distincte des
+  // trottoirs (clairs) et des routes (asphalte).
+  const footMat = new THREE.MeshStandardMaterial({
+    color: th.foot,
     roughness: 0.95,
     metalness: 0,
     side: THREE.DoubleSide,
@@ -547,19 +615,69 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       continue;
     }
 
-    // Routes (larges, asphalte) et footways (rubans plats fins).
-    const isRoad = path.kind === 'road';
-    const width = isRoad ? path.width ?? 5 : 1.2;
+    // Footway / cheminement piéton : dalle fine surélevée (teinte pavé).
+    if (path.kind === 'footway') {
+      const geom = ribbonSlab(pts, 1.4, 0.07);
+      if (!geom) continue;
+      const mesh = new THREE.Mesh(geom, footMat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      continue;
+    }
+
+    // Routes (larges, asphalte) : ruban plat au sol.
+    const width = path.width ?? 5;
     const geom = ribbon(pts, width);
     if (!geom) continue;
-    const mesh = new THREE.Mesh(geom, isRoad ? roadMat : pathMat);
-    mesh.position.y = isRoad ? 0.03 : 0.06;
+    const mesh = new THREE.Mesh(geom, roadMat);
+    mesh.position.y = 0.03;
     mesh.receiveShadow = true;
     scene.add(mesh);
   }
 
   // --- Mobilier : bancs, arrets de bus, places PMR ---
   const nb = payload.neighborhood;
+
+  // --- Parkings surfaciques (amenity=parking) : empreinte au sol matérialisée ---
+  const parkMat = new THREE.MeshStandardMaterial({
+    color: 0x6b7382,
+    roughness: 1,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+  const parkPmrMat = new THREE.MeshStandardMaterial({
+    color: 0x2f6fb0,
+    roughness: 0.95,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+  for (const area of nb.parkingAreas ?? []) {
+    const ring: [number, number][] = area.ring.map((p) => toLocal(p[0], p[1]));
+    let cx = 0;
+    let cz = 0;
+    for (const [x, z] of ring) {
+      maxR = Math.max(maxR, Math.hypot(x, z));
+      cx += x;
+      cz += z;
+    }
+    cx /= ring.length;
+    cz /= ring.length;
+    const geom = flatPolygon(ring);
+    if (!geom) continue;
+    const mesh = new THREE.Mesh(geom, area.pmr ? parkPmrMat : parkMat);
+    mesh.position.y = 0.02;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    // Repère "P" (ou "P PMR") au centre pour indiquer le stationnement.
+    const label = makeLabel([area.pmr ? '\u267F P' : 'P'], {
+      bg: area.pmr ? 'rgba(47,111,176,0.95)' : 'rgba(60,66,78,0.92)',
+      fg: '#ffffff',
+      worldH: 1.8,
+    });
+    label.position.set(cx, 2.2, cz);
+    scene.add(label);
+  }
 
   for (const bench of nb.benches ?? []) {
     const [x, z] = toLocal(bench.lng, bench.lat);

@@ -60,6 +60,8 @@ function expandColumnar(d: ColumnarPoints): GeoJSON.FeatureCollection {
   for (let i = 0; i < d.n; i += 1) {
     const k = d.k[i];
     const val = d.v[i];
+    // Code postal : restaure le 0 initial perdu (ex. 1700 -> 01700, dept. 01-09).
+    const cp = d.cp[i] && /^\d{4}$/.test(d.cp[i]) ? `0${d.cp[i]}` : d.cp[i] || null;
     // L'objet properties est partage entre la Place et la Feature (memoire).
     const props: Record<string, unknown> = {
       uuid: String(i),
@@ -67,8 +69,8 @@ function expandColumnar(d: ColumnarPoints): GeoJSON.FeatureCollection {
       nom: d.nom[i] || '',
       activite: d.act[i] || null,
       commune: d.com[i] || null,
-      code_postal: d.cp[i] || null,
-      adresse: [d.cp[i], d.com[i]].filter(Boolean).join(' ') || null,
+      code_postal: cp,
+      adresse: [cp, d.com[i]].filter(Boolean).join(' ') || null,
     };
     for (let b = 0; b < crit.length; b += 1) {
       props[crit[b]] = (k >> b) & 1 ? (((val >> b) & 1) === 1 ? true : false) : null;

@@ -25,7 +25,7 @@
           id="search-input"
           class="search-input"
           type="search"
-          placeholder="Code postal, ville ou nom d'un lieu…"
+          placeholder="…"
           autocomplete="off"
           role="combobox"
           aria-expanded="false"
@@ -45,7 +45,6 @@
           </button>
         </div>
         <button id="toggle-3d" class="toggle-3d" type="button" aria-pressed="false" title="Basculer entre la vue 3D et la carte 2D">Vue 3D</button>
-        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Basculer le thème clair/sombre" aria-pressed="false" title="Thème clair/sombre">🌙</button>
       </div>
     </header>
 
@@ -56,16 +55,6 @@
         <!-- Canvas de la scene 3D (Three.js), superpose et masque par defaut -->
         <canvas id="scene3d" class="scene3d" aria-hidden="true" tabindex="-1"></canvas>
         <div id="scene3d-ui" class="scene3d-ui" hidden></div>
-        <!-- Légende de la carte 2D -->
-        <details id="map-legend" class="map-legend" open>
-          <summary>Légende</summary>
-          <ul>
-            <li><span class="lg-dot lg-cluster"></span> Regroupement de lieux (nombre)</li>
-            <li><span class="lg-pin lg-ok"></span> Entrée accessible en fauteuil</li>
-            <li><span class="lg-pin lg-no"></span> Entrée non accessible</li>
-            <li><span class="lg-pin lg-unknown"></span> Accessibilité non renseignée</li>
-          </ul>
-        </details>
       </section>
 
       <!-- Vue liste accessible (RGAA/WCAG) -->
