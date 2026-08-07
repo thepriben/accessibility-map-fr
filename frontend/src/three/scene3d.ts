@@ -1,6 +1,20 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import type { NeighborhoodData, OsmBuilding } from '../data/overpass';
+import type {
+  NeighborhoodData,
+  OsmBuilding,
+  OsmBusRoute,
+  OsmFurniture,
+} from '../data/overpass';
+import {
+  alignX,
+  benchAngle,
+  clipToRadius,
+  localSideZ,
+  nearestLineDir,
+  parkingStall,
+  pathLength,
+} from './orient';
 
 // Couleurs OSM nommees usuelles (tag colour) -> hex, pour les bancs.
 const NAMED_COLOURS: Record<string, number> = {
@@ -22,9 +36,9 @@ const NAMED_COLOURS: Record<string, number> = {
 
 const BENCH_DEFAULT = 0x9c6b3f; // bois par defaut
 
-/** Convertit une valeur OSM `colour` en couleur Three (hex, nom, sinon defaut). */
-function parseColour(c: string | null): number {
-  if (!c) return BENCH_DEFAULT;
+/** Valeur OSM `colour` -> couleur Three, ou null si non exploitable. */
+function parseColourOrNull(c: string | null): number | null {
+  if (!c) return null;
   const v = c.trim().toLowerCase();
   if (/^#([0-9a-f]{6})$/.test(v)) return parseInt(v.slice(1), 16);
   if (/^#([0-9a-f]{3})$/.test(v)) {
@@ -33,7 +47,30 @@ function parseColour(c: string | null): number {
     const b = v[3];
     return parseInt(`${r}${r}${g}${g}${b}${b}`, 16);
   }
-  return NAMED_COLOURS[v] ?? BENCH_DEFAULT;
+  return NAMED_COLOURS[v] ?? null;
+}
+
+/** Convertit une valeur OSM `colour` en couleur Three (hex, nom, sinon defaut). */
+function parseColour(c: string | null): number {
+  return parseColourOrNull(c) ?? BENCH_DEFAULT;
+}
+
+/** Couleur Three -> chaine CSS (pour les etiquettes dessinees sur canvas). */
+function cssColour(c: number): string {
+  return `#${c.toString(16).padStart(6, '0')}`;
+}
+
+/**
+ * Pseudo-aleatoire stable derive d'un identifiant : donne de la variete aux
+ * objets repetes (arbres) sans scintiller d'un rendu a l'autre.
+ */
+function hash01(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 1000) / 1000;
 }
 
 /**
@@ -433,7 +470,7 @@ function makeCrossing(points: [number, number][], mat: THREE.Material): THREE.Gr
     if (len < 0.2) continue;
     const ux = dx / len;
     const uz = dz / len;
-    const angle = Math.atan2(-uz, ux);
+    const angle = alignX(ux, uz);
     const count = Math.max(1, Math.floor(len / spacing));
     for (let k = 0; k < count; k += 1) {
       const t = (k + 0.5) * spacing;
@@ -460,6 +497,24 @@ function flatPolygon(ring: [number, number][]): THREE.BufferGeometry | null {
   const geom = new THREE.ShapeGeometry(shape);
   geom.rotateX(-Math.PI / 2);
   return geom;
+}
+
+// Couleurs de repli pour les lignes de bus dont le réseau ne publie pas de
+// `colour` : teintes franches et bien distinctes entre elles.
+const BUS_PALETTE = [0x2b6cb0, 0x8b5cf6, 0xd6336c, 0xd97706, 0x0f9b8e, 0xb45309, 0x4f46e5];
+
+/** Couleur d'une ligne : celle du réseau si connue, sinon stable par ligne. */
+function busColour(route: OsmBusRoute, index: number): number {
+  const own = parseColourOrNull(route.colour);
+  if (own != null) return own;
+  const key = route.ref ?? route.name ?? route.id;
+  return BUS_PALETTE[(Math.floor(hash01(key) * BUS_PALETTE.length) + index) % BUS_PALETTE.length];
+}
+
+/** Décale une polyligne perpendiculairement (lignes de bus parallèles lisibles). */
+function offsetPolyline(points: [number, number][], off: number): [number, number][] {
+  if (!off || points.length < 2) return points;
+  return ribbonEdges(points, off * 2).left;
 }
 
 /** Ajoute un marqueur d'entree (pin) a l'origine = point Access'libre visé. */
@@ -507,7 +562,11 @@ function addEntranceMarker(scene: THREE.Scene, hasTargetBuilding: boolean): void
   scene.add(group);
 }
 
-/** Petit banc : assise (+ dossier optionnel), couleur issue d'OSM si connue. */
+/**
+ * Banc : assise (+ dossier optionnel), couleur issue d'OSM si connue. L'axe long
+ * est +X et l'assise regarde vers +Z (le dossier est côté -Z), ce qui permet de
+ * l'orienter par une simple rotation Y du groupe.
+ */
 function makeBench(x: number, z: number, colour: string | null, withBackrest: boolean): THREE.Group {
   const g = new THREE.Group();
   const mat = new THREE.MeshStandardMaterial({ color: parseColour(colour), roughness: 0.75 });
@@ -531,23 +590,326 @@ function makeBench(x: number, z: number, colour: string | null, withBackrest: bo
   return g;
 }
 
-/** Poteau + panneau d'arrêt de bus (le nom/ligne sont portés par une étiquette). */
-function makeBusStop(
-  x: number,
-  z: number,
-  poleMat: THREE.Material,
-  signMat: THREE.Material
-): THREE.Group {
+/** Panneau "BUS" (+ numéros de ligne) dessiné sur canvas, lisible des deux côtés. */
+function busSignTexture(refs: string | null): THREE.Texture {
+  const w = 264;
+  const h = 176;
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const g = cv.getContext('2d')!;
+  g.fillStyle = '#1d4e89';
+  g.fillRect(0, 0, w, h);
+  g.fillStyle = '#ffffff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.font = '700 66px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+  g.fillText('BUS', w / 2, refs ? 54 : h / 2);
+  if (refs) {
+    g.font = '700 44px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+    g.fillText(refs.slice(0, 12), w / 2, 124);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/**
+ * Arrêt de bus : quai, poteau et panneau côté rue, abri voyageurs et banc
+ * lorsqu'OSM les signale. `angle` aligne l'arrêt sur la voie (+X local), `side`
+ * indique de quel côté (Z local) se trouve la chaussée.
+ */
+function makeBusStop(opts: {
+  x: number;
+  z: number;
+  angle: number;
+  side: number;
+  shelter: boolean;
+  bench: boolean;
+  tactile: boolean;
+  signTex: THREE.Texture;
+}): THREE.Group {
+  const { side } = opts;
   const g = new THREE.Group();
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.8, 10), poleMat);
-  pole.position.y = 1.4;
+  const poleMat = new THREE.MeshStandardMaterial({
+    color: 0x50596b,
+    roughness: 0.45,
+    metalness: 0.55,
+  });
+  const quayMat = new THREE.MeshStandardMaterial({ color: 0xd3cdc2, roughness: 0.95 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0xbcd3e0,
+    roughness: 0.12,
+    metalness: 0.05,
+    transparent: true,
+    opacity: 0.38,
+    side: THREE.DoubleSide,
+  });
+
+  // Quai légèrement surélevé (montée à niveau).
+  const quay = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.14, 1.9), quayMat);
+  quay.position.set(0, 0.07, 0);
+  quay.receiveShadow = true;
+  g.add(quay);
+
+  // Bande d'éveil de vigilance en bord de quai.
+  if (opts.tactile) {
+    const band = new THREE.Mesh(
+      new THREE.BoxGeometry(4.4, 0.03, 0.3),
+      new THREE.MeshStandardMaterial({ color: 0xe8d64f, roughness: 0.8 })
+    );
+    band.position.set(0, 0.155, side * 0.75);
+    g.add(band);
+  }
+
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 2.9, 10), poleMat);
+  pole.position.set(1.5, 1.45, side * 0.6);
   pole.castShadow = true;
   g.add(pole);
-  const sign = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.36, 0.05), signMat);
-  sign.position.set(0, 2.55, 0);
-  sign.castShadow = true;
-  g.add(sign);
+
+  // Panneau : deux faces texturées pour être lisible dans les deux sens.
+  const signMat = new THREE.MeshBasicMaterial({ map: opts.signTex, side: THREE.FrontSide });
+  const backing = new THREE.Mesh(
+    new THREE.BoxGeometry(0.06, 0.48, 0.72),
+    new THREE.MeshStandardMaterial({ color: 0x203a5c, roughness: 0.6 })
+  );
+  backing.position.set(1.5, 2.6, side * 0.6);
+  backing.castShadow = true;
+  g.add(backing);
+  for (const s of [1, -1]) {
+    const face = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.46), signMat);
+    face.rotation.y = (s * Math.PI) / 2;
+    face.position.set(1.5 + s * 0.035, 2.6, side * 0.6);
+    g.add(face);
+  }
+
+  if (opts.shelter) {
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.09, 1.5), poleMat);
+    roof.position.set(-0.3, 2.45, -side * 0.25);
+    roof.castShadow = true;
+    g.add(roof);
+    // Paroi arrière (côté trottoir) + deux joues vitrées.
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 2.0), glassMat);
+    back.position.set(-0.3, 1.4, -side * 0.98);
+    g.add(back);
+    for (const s of [-1, 1]) {
+      const cheek = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 2.0), glassMat);
+      cheek.rotation.y = Math.PI / 2;
+      cheek.position.set(-0.3 + s * 1.7, 1.4, -side * 0.25);
+      g.add(cheek);
+    }
+    for (const s of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.4, 0.08), poleMat);
+      post.position.set(-0.3 + s * 1.66, 1.2, -side * 0.96);
+      post.castShadow = true;
+      g.add(post);
+    }
+  }
+
+  if (opts.bench) {
+    const seat = makeBench(0, 0, null, false);
+    seat.position.set(-0.3, 0.14, -side * 0.7);
+    // On attend le bus en regardant la chaussée.
+    seat.rotation.y = side > 0 ? 0 : Math.PI;
+    g.add(seat);
+  }
+
+  g.position.set(opts.x, 0, opts.z);
+  g.rotation.y = opts.angle;
+  return g;
+}
+
+/** Arbre : tronc + houppier, dimensions OSM si connues, silhouette variée. */
+function makeTree(
+  f: OsmFurniture,
+  x: number,
+  z: number,
+  mats: { trunk: THREE.Material; leaf: THREE.Material[] }
+): THREE.Group {
+  const r = hash01(f.id);
+  const h = Math.min(Math.max(f.height ?? 5 + r * 5, 3), 18);
+  const crown = Math.min(Math.max(f.crown ?? h * 0.55, 1.5), 9);
+  const trunkH = h * 0.36;
+  const g = new THREE.Group();
+
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(h * 0.032, h * 0.05, trunkH, 7),
+    mats.trunk
+  );
+  trunk.position.y = trunkH / 2;
+  trunk.castShadow = true;
+  g.add(trunk);
+
+  const leaf = mats.leaf[Math.floor(r * mats.leaf.length) % mats.leaf.length];
+  // Conifère si OSM le précise : cône plutôt que boule.
+  if (f.variant === 'needleleaved') {
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(crown / 2, h - trunkH, 9), leaf);
+    cone.position.y = trunkH + (h - trunkH) / 2;
+    cone.castShadow = true;
+    g.add(cone);
+  } else {
+    const main = new THREE.Mesh(new THREE.IcosahedronGeometry(crown / 2, 1), leaf);
+    main.position.y = trunkH + crown * 0.34;
+    main.scale.set(1, 1.12, 1);
+    main.rotation.y = r * Math.PI;
+    main.castShadow = true;
+    g.add(main);
+    // Second volume décalé : silhouette moins artificielle qu'une seule boule.
+    const top = new THREE.Mesh(new THREE.IcosahedronGeometry(crown * 0.29, 1), leaf);
+    top.position.set(crown * 0.14, trunkH + crown * 0.72, -crown * 0.12);
+    top.castShadow = true;
+    g.add(top);
+  }
+
   g.position.set(x, 0, z);
+  g.rotation.y = r * Math.PI * 2;
+  return g;
+}
+
+/** Borne (ou bouche) d'incendie : obstacle bas fréquent sur les trottoirs. */
+function makeHydrant(x: number, z: number, variant: string | null): THREE.Group {
+  const g = new THREE.Group();
+  const red = new THREE.MeshStandardMaterial({ color: 0xb5322f, roughness: 0.5, metalness: 0.3 });
+  if (variant === 'underground' || variant === 'pipe') {
+    const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.07, 16), red);
+    plate.position.y = 0.035;
+    g.add(plate);
+  } else {
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.17, 0.7, 12), red);
+    body.position.y = 0.35;
+    body.castShadow = true;
+    g.add(body);
+    const cap = new THREE.Mesh(
+      new THREE.SphereGeometry(0.16, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      red
+    );
+    cap.position.y = 0.7;
+    g.add(cap);
+    for (const s of [-1, 1]) {
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.18, 8), red);
+      arm.rotation.z = Math.PI / 2;
+      arm.position.set(s * 0.17, 0.5, 0);
+      g.add(arm);
+    }
+  }
+  g.position.set(x, 0, z);
+  return g;
+}
+
+/** Armoire de rue (réseaux) : volume opaque qui réduit la largeur de passage. */
+function makeStreetCabinet(x: number, z: number, angle: number): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x76806f, roughness: 0.7, metalness: 0.25 });
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.35, 0.48), mat);
+  box.position.y = 0.675;
+  box.castShadow = true;
+  g.add(box);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.03, 0.07, 0.56), mat);
+  roof.position.y = 1.38;
+  roof.castShadow = true;
+  g.add(roof);
+  g.position.set(x, 0, z);
+  g.rotation.y = angle;
+  return g;
+}
+
+/** Matériau d'eau (fontaines, points d'eau potable). */
+function waterMat(): THREE.Material {
+  return new THREE.MeshStandardMaterial({
+    color: 0x5fa8c7,
+    roughness: 0.15,
+    metalness: 0.2,
+    transparent: true,
+    opacity: 0.85,
+  });
+}
+
+/** Point d'eau potable : borne fontaine avec vasque. */
+function makeDrinkingWater(x: number, z: number): THREE.Group {
+  const g = new THREE.Group();
+  const metal = new THREE.MeshStandardMaterial({ color: 0x3f6b78, roughness: 0.4, metalness: 0.5 });
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.14, 1.0, 12), metal);
+  post.position.y = 0.5;
+  post.castShadow = true;
+  g.add(post);
+  const basin = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.22, 0.15, 14), metal);
+  basin.position.y = 1.03;
+  basin.castShadow = true;
+  g.add(basin);
+  const surface = new THREE.Mesh(new THREE.CircleGeometry(0.23, 16), waterMat());
+  surface.rotation.x = -Math.PI / 2;
+  surface.position.y = 1.1;
+  g.add(surface);
+  const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.24, 8), metal);
+  spout.rotation.x = Math.PI / 2.4;
+  spout.position.set(0, 1.24, -0.07);
+  g.add(spout);
+  g.position.set(x, 0, z);
+  return g;
+}
+
+/** Fontaine ornementale : bassin de pierre et jet d'eau. */
+function makeFountain(x: number, z: number): THREE.Group {
+  const g = new THREE.Group();
+  const stone = new THREE.MeshStandardMaterial({ color: 0xb6ada0, roughness: 0.95 });
+  const basin = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.62, 0.44, 24), stone);
+  basin.position.y = 0.22;
+  basin.castShadow = true;
+  basin.receiveShadow = true;
+  g.add(basin);
+  const surface = new THREE.Mesh(new THREE.CircleGeometry(1.34, 24), waterMat());
+  surface.rotation.x = -Math.PI / 2;
+  surface.position.y = 0.42;
+  g.add(surface);
+  const jet = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.11, 0.95, 10), waterMat());
+  jet.position.y = 0.9;
+  g.add(jet);
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(0.17, 12, 8), waterMat());
+  crown.position.y = 1.42;
+  g.add(crown);
+  g.position.set(x, 0, z);
+  return g;
+}
+
+/**
+ * Escalier : marches successives le long du cheminement. L'altitude réelle est
+ * inconnue, on suggère la montée — l'important est de voir l'obstacle.
+ */
+function makeSteps(
+  points: [number, number][],
+  count: number | null,
+  mat: THREE.Material
+): THREE.Group | null {
+  const total = pathLength(points);
+  if (points.length < 2 || total < 0.6) return null;
+  const g = new THREE.Group();
+  const n = Math.max(3, Math.min(count ?? Math.round(total / 0.3), 30));
+  const step = total / n;
+  const rise = Math.min(0.16, 2.4 / n);
+  const unit = new THREE.BoxGeometry(step * 0.92, 1, 1.7);
+  let done = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const [x0, z0] = points[i];
+    const [x1, z1] = points[i + 1];
+    const dx = x1 - x0;
+    const dz = z1 - z0;
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-3) continue;
+    const ux = dx / len;
+    const uz = dz / len;
+    const angle = alignX(ux, uz);
+    for (let t = step / 2; t < len; t += step) {
+      const y = rise * (done + 1);
+      const tread = new THREE.Mesh(unit, mat);
+      tread.scale.y = y;
+      tread.position.set(x0 + ux * t, y / 2, z0 + uz * t);
+      tread.rotation.y = angle;
+      tread.castShadow = true;
+      tread.receiveShadow = true;
+      g.add(tread);
+      done += 1;
+    }
+  }
   return g;
 }
 
@@ -661,15 +1023,33 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   });
   // Bandes blanches des passages piétons.
   const zebraMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.85 });
+  // Marches : teinte distincte, c'est l'obstacle majeur en fauteuil.
+  const stepsMat = new THREE.MeshStandardMaterial({ color: 0xc08a5a, roughness: 0.9 });
+  // Tracés conservés pour orienter le mobilier et les places de stationnement
+  // sans empreinte propre : la voirie d'un côté, le réseau piéton de l'autre
+  // (un banc s'aligne sur le trottoir, une place sur la rue).
+  const roadLines: [number, number][][] = [];
+  const footLines: [number, number][][] = [];
   for (const path of payload.neighborhood.paths) {
     if (path.kind === 'park') continue;
     const pts: [number, number][] = path.coords.map((p) => toLocal(p[0], p[1]));
     for (const [x, z] of pts) maxR = Math.max(maxR, Math.hypot(x, z));
+    if (pts.length >= 2) {
+      if (path.kind === 'road') roadLines.push(pts);
+      else if (path.kind === 'sidewalk' || path.kind === 'footway') footLines.push(pts);
+    }
 
     // Passage piéton : bandes blanches rayées posées sur la chaussée.
     if (path.kind === 'crossing') {
       const zebra = makeCrossing(pts, zebraMat);
       if (zebra) scene.add(zebra);
+      continue;
+    }
+
+    // Escalier : marches matérialisées le long du cheminement.
+    if (path.kind === 'steps') {
+      const stairs = makeSteps(pts, path.stepCount ?? null, stepsMat);
+      if (stairs) scene.add(stairs);
       continue;
     }
 
@@ -721,8 +1101,12 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     metalness: 0,
     side: THREE.DoubleSide,
   });
+  // Empreintes des parkings : réutilisées pour orienter les places qu'ils
+  // contiennent (une place suit toujours la géométrie de son parking).
+  const parkingRings: [number, number][][] = [];
   for (const area of nb.parkingAreas ?? []) {
     const ring: [number, number][] = area.ring.map((p) => toLocal(p[0], p[1]));
+    parkingRings.push(ring);
     let cx = 0;
     let cz = 0;
     for (const [x, z] of ring) {
@@ -748,41 +1132,179 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     scene.add(label);
   }
 
+  // --- Bancs : orientés par le tag OSM `direction` s'il existe, sinon alignés
+  // sur le cheminement le plus proche et tournés vers lui. ---
+  const benchGuides = footLines.length ? footLines : roadLines;
   for (const bench of nb.benches ?? []) {
     const [x, z] = toLocal(bench.lng, bench.lat);
     maxR = Math.max(maxR, Math.hypot(x, z));
-    scene.add(makeBench(x, z, bench.colour, bench.backrest !== false));
+    const seat = makeBench(x, z, bench.colour, bench.backrest !== false);
+    seat.rotation.y = benchAngle(x, z, bench.direction, benchGuides);
+    scene.add(seat);
   }
 
-  const busSignMat = new THREE.MeshStandardMaterial({ color: 0x2b6cb0, roughness: 0.5 });
-  const poleMat = new THREE.MeshStandardMaterial({ color: 0x394251, roughness: 0.6, metalness: 0.2 });
+  // --- Arrêts de bus : quai orienté sur la voie, abri/banc si connus ---
   for (const stop of nb.busStops ?? []) {
     const [x, z] = toLocal(stop.lng, stop.lat);
     maxR = Math.max(maxR, Math.hypot(x, z));
-    scene.add(makeBusStop(x, z, poleMat, busSignMat));
+    const near = nearestLineDir(x, z, roadLines);
+    const angle = near?.angle ?? 0;
+    // Côté chaussée : on oriente le quai et le poteau vers la rue.
+    const side = near ? localSideZ(near.px - x, near.pz - z, angle) : 1;
+    scene.add(
+      makeBusStop({
+        x,
+        z,
+        angle,
+        side,
+        shelter: stop.shelter === true,
+        bench: stop.bench === true,
+        tactile: stop.tactile === true,
+        signTex: busSignTexture(stop.line),
+      })
+    );
     const lines: string[] = [];
     if (stop.name) lines.push(stop.name);
     lines.push(stop.line ? `Ligne ${stop.line}` : 'Arrêt de bus');
+    const equip = [
+      stop.shelter === true ? 'abri' : null,
+      stop.bench === true ? 'banc' : null,
+    ].filter(Boolean);
+    if (equip.length) lines.push(equip.join(' · '));
     const label = makeLabel(lines, { bg: 'rgba(23,58,102,0.92)', fg: '#eaf1fb', worldH: 1.5 });
-    label.position.set(x, 3.9, z);
+    label.position.set(x, 4.1, z);
     scene.add(label);
   }
 
+  // --- Lignes de bus : ruban coloré suivant le tracé, décalé quand plusieurs
+  // lignes empruntent la même voie, avec la pastille du numéro. ---
+  const busRoutes = nb.busRoutes ?? [];
+  busRoutes.forEach((route, ri) => {
+    const col = busColour(route, ri);
+    const mat = new THREE.MeshStandardMaterial({
+      color: col,
+      roughness: 0.5,
+      emissive: col,
+      emissiveIntensity: 0.2,
+      side: THREE.DoubleSide,
+    });
+    const joint = new THREE.CircleGeometry(0.32, 12);
+    const lateral = (ri - (busRoutes.length - 1) / 2) * 0.85;
+    let longest: [number, number][] | null = null;
+    for (const seg of route.segments) {
+      const local = seg.map((p) => toLocal(p[0], p[1]));
+      for (const run of clipToRadius(local, Math.max(maxR, 60))) {
+        const line = offsetPolyline(run, lateral);
+        const geom = ribbon(line, 0.62);
+        if (geom) {
+          const mesh = new THREE.Mesh(geom, mat);
+          mesh.position.y = 0.14;
+          scene.add(mesh);
+        }
+        // Pastilles aux sommets : le ruban reste continu dans les virages.
+        for (const [jx, jz] of line) {
+          const dot = new THREE.Mesh(joint, mat);
+          dot.rotation.x = -Math.PI / 2;
+          dot.position.set(jx, 0.14, jz);
+          scene.add(dot);
+        }
+        if (!longest || pathLength(line) > pathLength(longest)) longest = line;
+      }
+    }
+    if (longest) {
+      const mid = longest[Math.floor(longest.length / 2)];
+      const badge = makeLabel([route.ref ? `Bus ${route.ref}` : 'Bus'], {
+        bg: cssColour(col),
+        fg: '#ffffff',
+        worldH: 1.3,
+      });
+      badge.position.set(mid[0], 2.6, mid[1]);
+      scene.add(badge);
+    }
+  });
+
+  // --- Places de stationnement : orientées par leur empreinte OSM si elle
+  // existe, sinon par le parking qui les contient, sinon par la voirie. ---
+  const stallMat = new THREE.MeshStandardMaterial({ color: 0x2f6fb0, roughness: 0.85 });
+  const stallPlainMat = new THREE.MeshStandardMaterial({ color: 0x9aa3af, roughness: 0.9 });
+  const stallLineMat = new THREE.MeshStandardMaterial({ color: 0xf4f4f2, roughness: 0.8 });
   for (const p of nb.parking ?? []) {
     const [x, z] = toLocal(p.lng, p.lat);
     maxR = Math.max(maxR, Math.hypot(x, z));
-    // Emplacement bleu marque au sol.
+
+    const { angle, long, short } = parkingStall({
+      x,
+      z,
+      pmr: p.pmr,
+      ring: p.ring ? p.ring.map((q) => toLocal(q[0], q[1])) : null,
+      host: parkingRings.find((ring) => ringContains(ring, x, z)) ?? null,
+      roads: roadLines,
+    });
+
+    // Le plan est basculé à plat (X = longueur, Z = largeur) ; l'orientation est
+    // portée par le groupe parent, ce qui évite de composer trois rotations.
+    const holder = new THREE.Group();
+    holder.position.set(x, 0, z);
+    holder.rotation.y = angle;
+    scene.add(holder);
+
     const stall = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.6, 5),
-      new THREE.MeshStandardMaterial({ color: 0x2f6fb0, roughness: 0.85 })
+      new THREE.PlaneGeometry(long, short),
+      p.pmr ? stallMat : stallPlainMat
     );
     stall.rotation.x = -Math.PI / 2;
-    stall.position.set(x, 0.07, z);
+    stall.position.y = 0.07;
     stall.receiveShadow = true;
-    scene.add(stall);
-    const label = makeLabel(['\u267F PMR'], { bg: 'rgba(47,111,176,0.95)', fg: '#ffffff', worldH: 1.5 });
-    label.position.set(x, 2.2, z);
-    scene.add(label);
+    holder.add(stall);
+
+    // Marquage au sol : deux traits blancs délimitant l'emplacement.
+    for (const s of [-1, 1]) {
+      const strip = new THREE.Mesh(new THREE.PlaneGeometry(long, 0.12), stallLineMat);
+      strip.rotation.x = -Math.PI / 2;
+      strip.position.set(0, 0.085, (s * short) / 2);
+      holder.add(strip);
+    }
+
+    if (p.pmr) {
+      const label = makeLabel(['\u267F PMR'], {
+        bg: 'rgba(47,111,176,0.95)',
+        fg: '#ffffff',
+        worldH: 1.5,
+      });
+      label.position.set(x, 2.2, z);
+      scene.add(label);
+    }
+  }
+
+  // --- Arbres, bornes incendie, armoires de rue, points d'eau ---
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b5340, roughness: 0.95 });
+  const leafMats = [0x5f8f52, 0x6f9c5c, 0x4f8352, 0x7fa863].map(
+    (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, flatShading: true })
+  );
+  for (const f of nb.furniture ?? []) {
+    const [x, z] = toLocal(f.lng, f.lat);
+    if (f.kind === 'tree' || f.kind === 'fountain') maxR = Math.max(maxR, Math.hypot(x, z));
+    switch (f.kind) {
+      case 'tree':
+        scene.add(makeTree(f, x, z, { trunk: trunkMat, leaf: leafMats }));
+        break;
+      case 'fire_hydrant':
+        scene.add(makeHydrant(x, z, f.variant ?? null));
+        break;
+      case 'street_cabinet':
+        scene.add(makeStreetCabinet(x, z, nearestLineDir(x, z, roadLines)?.angle ?? 0));
+        break;
+      case 'drinking_water':
+        scene.add(makeDrinkingWater(x, z));
+        break;
+      case 'fountain':
+        scene.add(makeFountain(x, z));
+        break;
+      default:
+        // Bancs et arrêts de bus sont déjà rendus depuis leurs propres listes ;
+        // le reste (bornes, lampadaires...) n'est pas encore représenté.
+        break;
+    }
   }
 
   const radius = Math.min(Math.max(maxR * 1.9, 40), 400);

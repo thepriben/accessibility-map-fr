@@ -21,6 +21,8 @@ function emptyNeighborhood(place: Place): NeighborhoodData {
     parkingAreas: [],
     busStops: [],
     benches: [],
+    kerbs: [],
+    busRoutes: [],
   };
 }
 

@@ -136,10 +136,22 @@ function legendHtml(payload: ScenePayload): string {
     items.push(`<li>${sw('#d7cdba')} Cheminements piétons</li>`);
   if (nb.paths.some((p) => p.kind === 'crossing'))
     items.push(`<li>${sw('#f2f2f2')} Passages piétons</li>`);
+  if (nb.paths.some((p) => p.kind === 'steps'))
+    items.push(`<li>${sw('#c08a5a')} Escaliers (obstacle)</li>`);
   if (nb.benches?.length) items.push(`<li>${sw('#9c6b3f')} Bancs</li>`);
   if (nb.busStops?.length) items.push(`<li>${sw('#2b6cb0')} Arrêts de bus</li>`);
-  if (nb.parking?.length) items.push(`<li>${sw('#2f6fb0')} Places PMR</li>`);
+  if (nb.busRoutes?.length) items.push(`<li>${sw('#8b5cf6')} Lignes de bus</li>`);
+  if (nb.parking?.some((p) => p.pmr)) items.push(`<li>${sw('#2f6fb0')} Places PMR</li>`);
+  if (nb.parking?.some((p) => !p.pmr))
+    items.push(`<li>${sw('#9aa3af')} Places de stationnement</li>`);
   if (nb.parkingAreas?.length) items.push(`<li>${sw('#6b7382')} Parkings</li>`);
+  if (nb.furniture?.some((f) => f.kind === 'tree')) items.push(`<li>${sw('#5f8f52')} Arbres</li>`);
+  if (nb.furniture?.some((f) => f.kind === 'fire_hydrant'))
+    items.push(`<li>${sw('#b5322f')} Bornes incendie</li>`);
+  if (nb.furniture?.some((f) => f.kind === 'street_cabinet'))
+    items.push(`<li>${sw('#76806f')} Armoires de rue</li>`);
+  if (nb.furniture?.some((f) => f.kind === 'drinking_water' || f.kind === 'fountain'))
+    items.push(`<li>${sw('#5fa8c7')} Eau (fontaines, eau potable)</li>`);
   return `
     <details class="scene3d-legend" open>
       <summary>Légende</summary>

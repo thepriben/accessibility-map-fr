@@ -84,13 +84,21 @@ export type FurnitureKind =
   | 'bollard'
   | 'lamp'
   | 'drinking_water'
-  | 'waste';
+  | 'waste'
+  | 'fire_hydrant'
+  | 'street_cabinet';
 
 export interface OsmFurniture {
   id: string;
   kind: FurnitureKind;
   lng: number;
   lat: number;
+  /** Hauteur (m) si renseignée : surtout utile pour les arbres. */
+  height?: number | null;
+  /** Diamètre de couronne (m) si renseigné : arbres. */
+  crown?: number | null;
+  /** Sous-type OSM (ex. `fire_hydrant:type`, `fountain`). */
+  variant?: string | null;
 }
 
 /** Lieux d'accueil (POI) : hotels, restaurants, cafes, communautaires, cultuels. */
@@ -106,18 +114,52 @@ export interface OsmPoi {
 
 export interface OsmPath {
   id: string;
-  kind: 'sidewalk' | 'footway' | 'park' | 'road' | 'crossing';
+  kind: 'sidewalk' | 'footway' | 'park' | 'road' | 'crossing' | 'steps';
   coords: [number, number][];
   /** Largeur indicative (m) pour le rendu, surtout utile pour les routes. */
   width?: number;
+  /** Revêtement OSM (asphalt, pavé, gravier…) : confort de roulage. */
+  surface?: string | null;
+  /** Pente OSM (`incline`) : `up`, `down` ou pourcentage. */
+  incline?: string | null;
+  /** Qualité de roulement OSM (`smoothness`). */
+  smoothness?: string | null;
+  /** Bande d'éveil de vigilance (`tactile_paving`). */
+  tactile?: boolean | null;
+  /** Accessibilité fauteuil déclarée (`wheelchair`). */
+  wheelchair?: string | null;
+  /** Nombre de marches (`step_count`) pour un escalier. */
+  stepCount?: number | null;
+  /** Rampe présente le long des marches (`ramp`). */
+  ramp?: boolean | null;
 }
 
-/** Place de stationnement PMR (handicapé). */
+/**
+ * Bordure de trottoir : élément déterminant pour un fauteuil (abaissée =
+ * franchissable, haute = obstacle).
+ */
+export interface OsmKerb {
+  id: string;
+  lng: number;
+  lat: number;
+  /** `lowered`, `flush`, `raised`, `rolled`… ou null si non précisé. */
+  kind: string | null;
+  /** Hauteur (m) si renseignée. */
+  height: number | null;
+  tactile: boolean | null;
+}
+
+/** Place de stationnement (amenity=parking_space), PMR ou non. */
 export interface OsmParking {
   id: string;
   lng: number;
   lat: number;
   pmr: boolean;
+  /**
+   * Empreinte exacte quand la place est cartographiée en surface : permet de
+   * l'orienter (et la dimensionner) fidèlement plutôt que de la deviner.
+   */
+  ring: [number, number][] | null;
 }
 
 /** Parking surfacique (amenity=parking) : empreinte au sol à matérialiser. */
@@ -134,6 +176,26 @@ export interface OsmBusStop {
   lat: number;
   name: string | null;
   line: string | null;
+  /** Abri voyageurs (`shelter`). */
+  shelter: boolean | null;
+  /** Banc à l'arrêt (`bench`). */
+  bench: boolean | null;
+  /** Bande d'éveil de vigilance sur le quai. */
+  tactile: boolean | null;
+}
+
+/**
+ * Ligne de bus passant dans le voisinage. Le tracé est celui des voies de la
+ * relation présentes dans l'emprise (le reste du parcours n'est pas téléchargé).
+ */
+export interface OsmBusRoute {
+  id: string;
+  /** Numéro de ligne (`ref`). */
+  ref: string | null;
+  name: string | null;
+  /** Couleur officielle (`colour`) si le réseau la publie. */
+  colour: string | null;
+  segments: [number, number][][];
 }
 
 /** Banc : on récupère au mieux la couleur et la présence de dossier (OSM). */
@@ -144,6 +206,12 @@ export interface OsmBench {
   backrest: boolean | null;
   colour: string | null;
   material: string | null;
+  /**
+   * Azimut (degrés, 0 = nord) vers lequel regarde la personne assise, d'après le
+   * tag OSM `direction`. Null si absent : l'orientation sera alors déduite du
+   * cheminement le plus proche.
+   */
+  direction: number | null;
 }
 
 export interface NeighborhoodData {
@@ -156,6 +224,8 @@ export interface NeighborhoodData {
   parkingAreas: OsmParkingArea[];
   busStops: OsmBusStop[];
   benches: OsmBench[];
+  kerbs: OsmKerb[];
+  busRoutes: OsmBusRoute[];
 }
 
 function bbox(lng: number, lat: number, radiusM: number): string {
@@ -163,6 +233,40 @@ function bbox(lng: number, lat: number, radiusM: number): string {
   const dLng = radiusM / (111320 * Math.cos((lat * Math.PI) / 180));
   // Overpass attend (south,west,north,east)
   return `${lat - dLat},${lng - dLng},${lat + dLat},${lng + dLng}`;
+}
+
+// Points cardinaux OSM -> azimut en degrés.
+const COMPASS: Record<string, number> = {
+  n: 0,
+  nne: 22.5,
+  ne: 45,
+  ene: 67.5,
+  e: 90,
+  ese: 112.5,
+  se: 135,
+  sse: 157.5,
+  s: 180,
+  ssw: 202.5,
+  sw: 225,
+  wsw: 247.5,
+  w: 270,
+  wnw: 292.5,
+  nw: 315,
+  nnw: 337.5,
+};
+
+/**
+ * Tag OSM `direction` -> azimut en degrés (0 = nord). Accepte un nombre
+ * (`180`) ou un point cardinal (`SW`). Null si inexploitable.
+ */
+function parseDirection(v: unknown): number | null {
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  const cardinal = COMPASS[s];
+  if (cardinal != null) return cardinal;
+  const n = parseFloat(s.replace(',', '.'));
+  return Number.isFinite(n) ? ((n % 360) + 360) % 360 : null;
 }
 
 function toNum(v: unknown): number | null {
@@ -302,8 +406,12 @@ async function fetchNeighborhoodRaw(
   radiusM: number
 ): Promise<NeighborhoodData> {
   const b = bbox(lng, lat, radiusM);
-  // Batiments + cheminements pietons + mobilier utile (places PMR, arrets de
-  // bus, bancs). Les autres POI seront reintroduits plus tard si besoin.
+  // Bloc principal : bâtiments, réseau piéton (avec les attributs qui décident
+  // de la franchissabilité en fauteuil), voirie, stationnement et mobilier.
+  // Puis, en second temps, les lignes de bus : `foreach` sort les relations une
+  // par une avec leurs seules voies présentes dans l'emprise, ce qui permet de
+  // savoir à quelle ligne appartient chaque tronçon sans télécharger le
+  // parcours entier (souvent toute la ville).
   const query = `[out:json][timeout:25];
     (
       way["building"](${b});
@@ -311,6 +419,7 @@ async function fetchNeighborhoodRaw(
       way["footway"="sidewalk"](${b});
       way["footway"="crossing"](${b});
       way["highway"="pedestrian"](${b});
+      way["highway"="steps"](${b});
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|road)$"](${b});
       node["amenity"="bench"](${b});
       node["highway"="bus_stop"](${b});
@@ -318,8 +427,23 @@ async function fetchNeighborhoodRaw(
       node["amenity"="parking_space"](${b});
       way["amenity"="parking_space"](${b});
       way["amenity"="parking"](${b});
+      node["natural"="tree"](${b});
+      way["natural"="tree_row"](${b});
+      node["emergency"="fire_hydrant"](${b});
+      node["man_made"="street_cabinet"](${b});
+      node["amenity"="drinking_water"](${b});
+      node["amenity"="fountain"](${b});
+      way["amenity"="fountain"](${b});
+      node["barrier"="kerb"](${b});
+      node["kerb"](${b});
     );
-    out geom tags;`;
+    out geom tags;
+    rel["route"~"^(bus|trolleybus)$"](${b})->.br;
+    foreach.br->.r (
+      .r out tags;
+      way(r.r)(${b});
+      out skel geom;
+    );`;
 
   const data = await overpassFetch(query);
 
@@ -341,9 +465,17 @@ async function fetchNeighborhoodRaw(
     parkingAreas: [],
     busStops: [],
     benches: [],
+    kerbs: [],
+    busRoutes: [],
   };
 
-  for (const el of data.elements || []) {
+  // Le `foreach` des lignes de bus émet ses éléments après le bloc principal :
+  // tout ce qui suit la première relation `route=` relève de cette section.
+  const elements: any[] = data.elements;
+  const busStart = elements.findIndex((e) => e.type === 'relation' && e.tags?.route);
+  const mainEls = busStart >= 0 ? elements.slice(0, busStart) : elements;
+
+  for (const el of mainEls) {
     const tags = el.tags || {};
 
     // Batiments (way avec footprint).
@@ -390,13 +522,39 @@ async function fetchNeighborhoodRaw(
       out.pois.push({ id: eid, kind: poi, lng: pos[0], lat: pos[1], name: tags.name || null });
     }
 
-    // Place de stationnement PMR (handicapé) : node ou way (surface).
-    if (tags.amenity === 'parking_space' && pos && isDisabledParking(tags)) {
-      out.parking.push({ id: eid, lng: pos[0], lat: pos[1], pmr: true });
+    // Place de stationnement, PMR ou non. Pour un way, on conserve l'empreinte :
+    // elle donne l'orientation réelle de la place (sinon on la déduira du
+    // parking qui la contient ou de la voirie voisine).
+    if (tags.amenity === 'parking_space' && pos) {
+      out.parking.push({
+        id: eid,
+        lng: pos[0],
+        lat: pos[1],
+        pmr: isDisabledParking(tags),
+        ring:
+          el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 3
+            ? el.geometry.map((g: any) => [g.lon, g.lat] as [number, number])
+            : null,
+      });
+    }
+
+    // Alignement d'arbres : on matérialise des sujets régulièrement espacés.
+    if (el.type === 'way' && tags.natural === 'tree_row' && Array.isArray(el.geometry)) {
+      sampleAlong(el.geometry, 9).forEach(([tlng, tlat], i) => {
+        out.furniture.push({
+          id: `w${el.id}-${i}`,
+          kind: 'tree',
+          lng: tlng,
+          lat: tlat,
+          height: toNum(tags.height),
+          crown: toNum(tags.diameter_crown),
+          variant: tags.leaf_type || null,
+        });
+      });
     }
 
     if (el.type === 'node') {
-      // Arret de bus : nom de l'arret + ligne(s) si disponibles.
+      // Arret de bus : nom, ligne(s) et confort du quai (abri, banc).
       if (tags.highway === 'bus_stop' || (tags.public_transport === 'platform' && tags.bus === 'yes')) {
         out.busStops.push({
           id: eid,
@@ -404,10 +562,25 @@ async function fetchNeighborhoodRaw(
           lat: el.lat,
           name: tags.name || null,
           line: tags.route_ref || tags.ref || null,
+          shelter: parseBool(tags.shelter),
+          bench: parseBool(tags.bench),
+          tactile: parseBool(tags.tactile_paving),
         });
       }
 
-      // Banc : couleur / dossier / materiau au mieux (tags OSM).
+      // Bordure de trottoir : franchissable ou non pour un fauteuil.
+      if (tags.kerb || tags.barrier === 'kerb') {
+        out.kerbs.push({
+          id: eid,
+          lng: el.lon,
+          lat: el.lat,
+          kind: tags.kerb || null,
+          height: toNum(tags['kerb:height'] ?? tags.height),
+          tactile: parseBool(tags.tactile_paving),
+        });
+      }
+
+      // Banc : couleur / dossier / materiau / orientation au mieux (tags OSM).
       if (tags.amenity === 'bench') {
         out.benches.push({
           id: eid,
@@ -416,20 +589,37 @@ async function fetchNeighborhoodRaw(
           backrest: parseBool(tags.backrest),
           colour: tags.colour || tags.color || null,
           material: tags.material || null,
+          direction: parseDirection(tags.direction),
         });
       }
 
       // Mobilier / obstacles / points d'eau (nodes).
       const kind = furnitureKind(tags);
-      if (kind) out.furniture.push({ id: `n${el.id}`, kind, lng: el.lon, lat: el.lat });
+      if (kind) {
+        out.furniture.push({
+          id: `n${el.id}`,
+          kind,
+          lng: el.lon,
+          lat: el.lat,
+          height: toNum(tags.height),
+          crown: toNum(tags.diameter_crown),
+          variant: tags['fire_hydrant:type'] || tags.fountain || tags.leaf_type || null,
+        });
+      }
     }
 
-    // Cheminements pietons (footway / trottoir / parc) et routes carrossables.
+    // Fontaine cartographiée en surface : on la ramène à son centre.
+    if (el.type === 'way' && tags.amenity === 'fountain' && pos) {
+      out.furniture.push({ id: eid, kind: 'fountain', lng: pos[0], lat: pos[1] });
+    }
+
+    // Cheminements pietons (footway / trottoir / marches / parc) et routes.
     if (el.type === 'way' && Array.isArray(el.geometry)) {
       let kind: OsmPath['kind'] | null = null;
       let width: number | undefined;
       const rw = roadWidth(tags.highway);
-      if (tags.footway === 'crossing') kind = 'crossing';
+      if (tags.highway === 'steps') kind = 'steps';
+      else if (tags.footway === 'crossing') kind = 'crossing';
       else if (tags.footway === 'sidewalk') kind = 'sidewalk';
       else if (tags.highway === 'footway' || tags.highway === 'pedestrian') kind = 'footway';
       else if (rw != null) {
@@ -442,11 +632,71 @@ async function fetchNeighborhoodRaw(
           kind,
           width,
           coords: el.geometry.map((g: any) => [g.lon, g.lat] as [number, number]),
+          surface: tags.surface || null,
+          incline: tags.incline || null,
+          smoothness: tags.smoothness || null,
+          tactile: parseBool(tags.tactile_paving),
+          wheelchair: tags.wheelchair || null,
+          stepCount: toNum(tags.step_count),
+          ramp: parseBool(tags.ramp) ?? parseBool(tags['ramp:wheelchair']),
         });
       }
     }
   }
+
+  // Lignes de bus : une relation puis ses voies (voir le `foreach` de la requête).
+  if (busStart >= 0) {
+    let current: OsmBusRoute | null = null;
+    for (const el of elements.slice(busStart)) {
+      if (el.type === 'relation') {
+        const t = el.tags || {};
+        current = {
+          id: `r${el.id}`,
+          ref: t.ref || null,
+          name: t.name || null,
+          colour: t.colour || t.color || null,
+          segments: [],
+        };
+        out.busRoutes.push(current);
+      } else if (el.type === 'way' && current && Array.isArray(el.geometry)) {
+        const seg = el.geometry
+          .filter((g: any) => g && Number.isFinite(g.lon) && Number.isFinite(g.lat))
+          .map((g: any) => [g.lon, g.lat] as [number, number]);
+        if (seg.length >= 2) current.segments.push(seg);
+      }
+    }
+    // Une ligne sans tracé dans l'emprise n'a rien à montrer.
+    out.busRoutes = out.busRoutes.filter((r) => r.segments.length > 0);
+  }
+
   return out;
+}
+
+/**
+ * Points régulièrement espacés (tous `stepM` mètres) le long d'une géométrie
+ * OSM. Sert à matérialiser un alignement d'arbres.
+ */
+function sampleAlong(
+  geom: { lon: number; lat: number }[],
+  stepM: number,
+  max = 40
+): [number, number][] {
+  const pts: [number, number][] = [];
+  let acc = 0;
+  let next = 0;
+  for (let i = 0; i < geom.length - 1 && pts.length < max; i += 1) {
+    const a = geom[i];
+    const c = geom[i + 1];
+    const seg = distM(a.lon, a.lat, c.lon, c.lat);
+    if (seg <= 0) continue;
+    while (next <= acc + seg && pts.length < max) {
+      const t = (next - acc) / seg;
+      pts.push([a.lon + (c.lon - a.lon) * t, a.lat + (c.lat - a.lat) * t]);
+      next += stepM;
+    }
+    acc += seg;
+  }
+  return pts;
 }
 
 function furnitureKind(tags: Record<string, string>): FurnitureKind | null {
@@ -459,6 +709,8 @@ function furnitureKind(tags: Record<string, string>): FurnitureKind | null {
   if (tags.highway === 'street_lamp') return 'lamp';
   if (tags.amenity === 'drinking_water') return 'drinking_water';
   if (tags.amenity === 'waste_basket') return 'waste';
+  if (tags.emergency === 'fire_hydrant') return 'fire_hydrant';
+  if (tags.man_made === 'street_cabinet') return 'street_cabinet';
   return null;
 }
 
