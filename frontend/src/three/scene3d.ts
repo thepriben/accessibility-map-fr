@@ -8,6 +8,8 @@ import type {
   OsmFurniture,
   OsmPath,
 } from '../data/overpass';
+import { attachHover, tagInfo, type HoverHandle, type SceneInfo } from './hover';
+import { findRoute, type RouteLine } from './route';
 import {
   alignX,
   benchAngle,
@@ -138,6 +140,7 @@ interface Ctx {
   canvas: HTMLCanvasElement;
   raf: number;
   ro: ResizeObserver | null;
+  hover: HoverHandle | null;
 }
 
 let ctx: Ctx | null = null;
@@ -384,6 +387,140 @@ function ribbon(points: [number, number][], width: number): THREE.BufferGeometry
   geom.setIndex(idx);
   geom.computeVertexNormals();
   return geom;
+}
+
+// --- Trajet en pointillés animés ------------------------------------------
+
+/** Couleur du trajet : un cyan vif, absent du reste de la scène. */
+const COLOR_ROUTE = 0x1fc3e0;
+/** Longueur d'un motif tiret + espace (m). */
+const ROUTE_PERIOD = 2.6;
+/** Vitesse de défilement des tirets (m/s) : lisible sans être agité. */
+const ROUTE_SPEED = 3.4;
+
+/**
+ * Motif d'un tiret, dessiné une fois puis répété le long du trajet. Le dégradé
+ * de bout en bout adoucit la césure entre deux tirets.
+ */
+function dashTexture(colour: number): THREE.CanvasTexture {
+  const w = 128;
+  const h = 32;
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const g = cv.getContext('2d');
+  if (g) {
+    const css = `#${colour.toString(16).padStart(6, '0')}`;
+    g.clearRect(0, 0, w, h);
+    const grad = g.createLinearGradient(0, 0, w * 0.62, 0);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.18, css);
+    grad.addColorStop(0.82, css);
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, w * 0.62, h);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+/**
+ * Ruban dont la coordonnée U vaut la distance parcourue (m) : le motif de
+ * tirets garde le même pas quels que soient les virages, et le faire défiler
+ * revient à décaler la texture.
+ */
+function dashRibbon(points: [number, number][], width: number): THREE.BufferGeometry | null {
+  if (points.length < 2) return null;
+  const hw = width / 2;
+  const pos: number[] = [];
+  const uv: number[] = [];
+  const idx: number[] = [];
+  let run = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    const [x, z] = points[i];
+    if (i > 0) run += Math.hypot(x - points[i - 1][0], z - points[i - 1][1]);
+    const prev = points[Math.max(i - 1, 0)];
+    const next = points[Math.min(i + 1, points.length - 1)];
+    let dx = next[0] - prev[0];
+    let dz = next[1] - prev[1];
+    const len = Math.hypot(dx, dz) || 1;
+    dx /= len;
+    dz /= len;
+    pos.push(x - dz * hw, 0, z + dx * hw);
+    pos.push(x + dz * hw, 0, z - dx * hw);
+    uv.push(run, 1, run, 0);
+  }
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = i * 2;
+    idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geom.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geom.setIndex(idx);
+  return geom;
+}
+
+/** Petit anneau posé au sol, pour marquer une extrémité du trajet. */
+function routeEnd(x: number, z: number, colour: number): THREE.Mesh {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.55, 0.85, 28),
+    new THREE.MeshBasicMaterial({
+      color: colour,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.21, z);
+  ring.renderOrder = 3;
+  return ring;
+}
+
+/**
+ * Trajet matérialisé au sol : tirets qui défilent du départ vers l'arrivée,
+ * plus un anneau à chaque extrémité. Renvoie le groupe et la fonction
+ * d'animation à appeler à chaque trame.
+ */
+function makeRoute(
+  points: [number, number][],
+  colour: number
+): { group: THREE.Group; tick: (dt: number) => void } | null {
+  const geom = dashRibbon(points, 0.85);
+  if (!geom) return null;
+
+  const tex = dashTexture(colour);
+  tex.repeat.set(1 / ROUTE_PERIOD, 1);
+  const mesh = new THREE.Mesh(
+    geom,
+    new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      // Sans cela, les tirets masqueraient ce qui passe derrière eux ; ils
+      // restent en revanche cachés par les bâtiments, ce qui est souhaitable.
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    })
+  );
+  mesh.position.y = 0.2;
+  mesh.renderOrder = 3;
+
+  const group = new THREE.Group();
+  group.add(mesh);
+  group.add(routeEnd(points[0][0], points[0][1], colour));
+  group.add(routeEnd(points[points.length - 1][0], points[points.length - 1][1], colour));
+
+  return {
+    group,
+    tick: (dt) => {
+      tex.offset.x = (tex.offset.x - (dt * ROUTE_SPEED) / ROUTE_PERIOD) % 1;
+    },
+  };
 }
 
 /** Calcule les bords gauche/droite d'un ruban (offset perpendiculaire). */
@@ -987,6 +1124,221 @@ function waterMat(): THREE.Material {
   });
 }
 
+/** Borne (bollard) : obstacle bas, souvent en série le long d'un trottoir. */
+function makeBollard(x: number, z: number): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x4b5159,
+    roughness: 0.5,
+    metalness: 0.4,
+  });
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.85, 10), mat);
+  post.position.y = 0.425;
+  post.castShadow = true;
+  g.add(post);
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 6), mat);
+  cap.position.y = 0.85;
+  g.add(cap);
+  g.position.set(x, 0, z);
+  return g;
+}
+
+/** Lampadaire : mât et crosse, gabarit indicatif. */
+function makeStreetLamp(x: number, z: number, angle: number): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x596170,
+    roughness: 0.45,
+    metalness: 0.55,
+  });
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, 4.2, 10), mat);
+  mast.position.y = 2.1;
+  mast.castShadow = true;
+  g.add(mast);
+  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.0, 8), mat);
+  arm.rotation.z = Math.PI / 2;
+  arm.position.set(0.5, 4.15, 0);
+  g.add(arm);
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.14, 0.26),
+    new THREE.MeshStandardMaterial({
+      color: 0xf2ead4,
+      roughness: 0.4,
+      emissive: 0x2a2a20,
+    })
+  );
+  head.position.set(0.95, 4.05, 0);
+  g.add(head);
+  g.position.set(x, 0, z);
+  g.rotation.y = angle;
+  return g;
+}
+
+/** Corbeille de rue : petit encombrement, mais sur le cheminement. */
+function makeWasteBin(x: number, z: number): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x4f5a52,
+    roughness: 0.75,
+    metalness: 0.2,
+  });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.22, 0.8, 12), mat);
+  body.position.y = 0.5;
+  body.castShadow = true;
+  g.add(body);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.035, 6, 14), mat);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.9;
+  g.add(rim);
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.5, 8), mat);
+  post.position.y = 0.25;
+  g.add(post);
+  g.position.set(x, 0, z);
+  return g;
+}
+
+/**
+ * Toilettes publiques : cabine, avec le pictogramme ♿ quand elles sont
+ * declarees accessibles — une information de premier plan pour preparer une
+ * sortie.
+ */
+function makeToilets(x: number, z: number, angle: number, accessible: boolean): THREE.Group {
+  const g = new THREE.Group();
+  const shell = new THREE.MeshStandardMaterial({
+    color: 0x9aa6ab,
+    roughness: 0.7,
+    metalness: 0.2,
+  });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.4, 1.6), shell);
+  body.position.y = 1.2;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.12, 1.75), shell);
+  roof.position.y = 2.45;
+  roof.castShadow = true;
+  g.add(roof);
+  const door = new THREE.Mesh(
+    new THREE.BoxGeometry(0.8, 1.95, 0.06),
+    new THREE.MeshStandardMaterial({ color: 0x39424a, roughness: 0.55 })
+  );
+  door.position.set(0, 0.98, 0.82);
+  g.add(door);
+  if (accessible) {
+    const plaque = makeAccessPlaque(0x2f6fb0);
+    plaque.position.set(0, 1.75, 0.87);
+    g.add(plaque);
+  }
+  g.position.set(x, 0, z);
+  g.rotation.y = angle;
+  return g;
+}
+
+/** Ascenseur : cabine vitree, acces vertical decisif quand il existe. */
+function makeElevator(x: number, z: number, accessible: boolean): THREE.Group {
+  const g = new THREE.Group();
+  const frameMat = new THREE.MeshStandardMaterial({
+    color: 0x5c6673,
+    roughness: 0.4,
+    metalness: 0.6,
+  });
+  const glass = new THREE.MeshStandardMaterial({
+    color: 0xbcd3e0,
+    roughness: 0.1,
+    metalness: 0.05,
+    transparent: true,
+    opacity: 0.4,
+    side: THREE.DoubleSide,
+  });
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.6, 1.6), glass);
+  cabin.position.y = 1.3;
+  g.add(cabin);
+  for (const [sx, sz] of [
+    [-0.8, -0.8],
+    [0.8, -0.8],
+    [-0.8, 0.8],
+    [0.8, 0.8],
+  ]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.7, 0.1), frameMat);
+    post.position.set(sx, 1.35, sz);
+    post.castShadow = true;
+    g.add(post);
+  }
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.12, 1.8), frameMat);
+  roof.position.y = 2.72;
+  roof.castShadow = true;
+  g.add(roof);
+  if (accessible) {
+    const plaque = makeAccessPlaque(0x2f6fb0);
+    plaque.position.set(0, 1.6, 0.83);
+    g.add(plaque);
+  }
+  g.position.set(x, 0, z);
+  return g;
+}
+
+/**
+ * Barriere de passage (portillon, chicane, bloc). Contrairement a une borne
+ * isolee, elle reduit la largeur utile et bloque souvent un fauteuil : on la
+ * marque donc en teinte d'alerte.
+ */
+function makeBarrier(x: number, z: number, angle: number, variant: string | null): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xb8783a,
+    roughness: 0.6,
+    metalness: 0.3,
+  });
+  if (variant === 'cycle_barrier' || variant === 'chicane') {
+    // Chicane : deux barres decalees imposant un zigzag, impraticable en fauteuil.
+    for (const s of [-1, 1]) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.0, 1.2), mat);
+      bar.position.set(s * 0.45, 0.5, s * 0.35);
+      bar.castShadow = true;
+      g.add(bar);
+    }
+  } else if (variant === 'block') {
+    const block = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.6, 0.6), mat);
+    block.position.y = 0.3;
+    block.castShadow = true;
+    g.add(block);
+  } else {
+    // Portillon : deux montants et une lisse.
+    for (const s of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.2, 8), mat);
+      post.position.set(s * 0.8, 0.6, 0);
+      post.castShadow = true;
+      g.add(post);
+    }
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.08), mat);
+    rail.position.y = 0.95;
+    g.add(rail);
+  }
+  g.position.set(x, 0, z);
+  g.rotation.y = angle;
+  return g;
+}
+
+/**
+ * Bordure de trottoir. Abaissee, elle se franchit et se marque discretement au
+ * sol ; haute, c'est un ressaut qu'on materialise en relief.
+ */
+function makeKerb(x: number, z: number, angle: number, lowered: boolean): THREE.Group {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({
+    color: lowered ? 0x2f6fb0 : 0xa8563f,
+    roughness: 0.85,
+  });
+  const h = lowered ? 0.05 : 0.16;
+  const slab = new THREE.Mesh(new THREE.BoxGeometry(1.4, h, 0.34), mat);
+  slab.position.y = h / 2;
+  slab.receiveShadow = true;
+  g.add(slab);
+  g.position.set(x, 0, z);
+  g.rotation.y = angle;
+  return g;
+}
+
 /** Point d'eau potable : borne fontaine avec vasque. */
 function makeDrinkingWater(x: number, z: number): THREE.Group {
   const g = new THREE.Group();
@@ -1164,6 +1516,16 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(th.bg);
 
+  // Objets interrogeables au survol : uniquement ceux qui portent une
+  // information, jamais le decor (sol, trottoirs, chaussees).
+  const hoverables: THREE.Object3D[] = [];
+  const addInfo = <T extends THREE.Object3D>(obj: T, info: SceneInfo): T => {
+    tagInfo(obj, info);
+    hoverables.push(obj);
+    scene.add(obj);
+    return obj;
+  };
+
   // --- Sol ---
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(2000, 2000),
@@ -1195,12 +1557,17 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     emissive: COLOR_TARGET,
     emissiveIntensity: 0.12,
   });
+  // Rayon de cadrage. Overpass renvoie les chemins entiers, pas seulement leur
+  // portion dans le voisinage : une rue qui traverse le quartier peut filer sur
+  // un kilomètre. Sans plafond, la caméra reculait jusqu'à ce que ces bouts de
+  // voirie tiennent à l'écran, et les 100 derniers mètres devenaient illisibles.
+  const FRAME_MAX = 130;
   let maxR = 20;
-  const targetIdx = pickTargetBuilding(
-    payload.neighborhood.buildings,
-    payload.place.nom,
-    toLocal
-  );
+  const grow = (x: number, z: number): void => {
+    const d = Math.hypot(x, z);
+    if (d <= FRAME_MAX && d > maxR) maxR = d;
+  };
+  const targetIdx = pickTargetBuilding(payload.neighborhood.buildings, payload.place.nom, toLocal);
   let hasTargetBuilding = false;
   // Façades effectivement dessinees (empreintes retrecies), indexees comme les
   // batiments : servent a poser les portes au bon endroit sur le mur.
@@ -1212,7 +1579,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       continue;
     }
     const ring: [number, number][] = b.ring.map((p) => toLocal(p[0], p[1]));
-    for (const [x, z] of ring) maxR = Math.max(maxR, Math.hypot(x, z));
+    for (const [x, z] of ring) grow(x, z);
     // Empreinte legerement retrecie -> les routes/trottoirs restent visibles.
     const inner = insetRing(ring, 0.6);
     facades.push(inner);
@@ -1232,7 +1599,19 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     const mesh = new THREE.Mesh(geom, isTarget ? targetMat : wallMat);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    scene.add(mesh);
+    if (isTarget || b.name) {
+      addInfo(mesh, {
+        title: isTarget ? payload.place.nom : (b.name ?? 'Bâtiment'),
+        colour: isTarget ? COLOR_TARGET : undefined,
+        details: [
+          isTarget ? 'Lieu visé' : null,
+          isTarget && b.name && b.name !== payload.place.nom ? `OpenStreetMap : ${b.name}` : null,
+          b.levels ? `${b.levels} niveau${b.levels > 1 ? 'x' : ''}` : null,
+        ],
+      });
+    } else {
+      scene.add(mesh);
+    }
 
     // Aretes discretes pour une definition "maquette".
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25), edgeMat);
@@ -1289,7 +1668,29 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     const door = makeDoorMarker(d.e, colour, d.target, d.outward);
     door.position.set(d.x, 0, d.z);
     door.rotation.y = d.angle; // encadrement dans le plan de la façade
-    scene.add(door);
+    const access =
+      d.e.wheelchair === 'yes'
+        ? 'Accessible en fauteuil'
+        : d.e.wheelchair === 'limited'
+          ? 'Accès limité en fauteuil'
+          : d.e.wheelchair === 'no'
+            ? 'Non accessible en fauteuil'
+            : 'Accessibilité non renseignée';
+    addInfo(door, {
+      title: d.target
+        ? d.e.kind === 'main'
+          ? 'Entrée principale du lieu'
+          : 'Entrée du lieu'
+        : 'Entrée d’un bâtiment voisin',
+      colour,
+      details: [
+        access,
+        d.e.automatic ? 'Porte automatique' : null,
+        d.e.stepCount ? `${d.e.stepCount} marche${d.e.stepCount > 1 ? 's' : ''} au seuil` : null,
+        d.e.kerbHeight != null && d.e.kerbHeight > 0 ? `Ressaut de ${d.e.kerbHeight} m` : null,
+        d.e.width ? `Passage de ${d.e.width} m` : null,
+      ],
+    });
   }
 
   // --- Marqueur de l'acces vise ---
@@ -1338,14 +1739,23 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // (un banc s'aligne sur le trottoir, une place sur la rue).
   const roadLines: [number, number][][] = [];
   const footLines: [number, number][][] = [];
+  // Réseau empruntable à pied, pour le calcul du trajet. Les escaliers y
+  // figurent mais coûtent cher : le trajet les contourne s'il le peut.
+  const walkNet: RouteLine[] = [];
   for (const path of payload.neighborhood.paths) {
     if (path.kind === 'park') continue;
-    const pts: [number, number][] = path.coords.map((p) => toLocal(p[0], p[1]));
-    for (const [x, z] of pts) maxR = Math.max(maxR, Math.hypot(x, z));
-    if (pts.length >= 2) {
-      if (path.kind === 'road') roadLines.push(pts);
-      else if (path.kind === 'sidewalk' || path.kind === 'footway') footLines.push(pts);
-    }
+    // Overpass rend les chemins entiers : une rue traversant le quartier
+    // partait sinon jusqu'à l'horizon, en étoile autour de la scène. On ne
+    // garde que les portions présentes dans le voisinage.
+    const whole: [number, number][] = path.coords.map((p) => toLocal(p[0], p[1]));
+    for (const pts of clipToRadius(whole, FRAME_MAX)) {
+      for (const [x, z] of pts) grow(x, z);
+      if (pts.length >= 2) {
+        if (path.kind === 'road') roadLines.push(pts);
+        else if (path.kind === 'sidewalk' || path.kind === 'footway') footLines.push(pts);
+        if (path.kind !== 'road')
+          walkNet.push({ points: pts, cost: path.kind === 'steps' ? 6 : 1 });
+      }
 
     // Passage piéton : bandes blanches rayées posées sur la chaussée.
     if (path.kind === 'crossing') {
@@ -1354,12 +1764,25 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       continue;
     }
 
-    // Escalier : volée de marches, main courante et rampe si OSM les signale.
-    if (path.kind === 'steps') {
-      const stairs = makeSteps(path, pts, stepsMat);
-      if (stairs) scene.add(stairs);
-      continue;
-    }
+      // Escalier : volée de marches, main courante et rampe si OSM les signale.
+      if (path.kind === 'steps') {
+        const stairs = makeSteps(path, pts, stepsMat);
+        if (stairs) {
+          addInfo(stairs, {
+            title: 'Escalier',
+            colour: path.rampWheelchair ? 0x2f6fb0 : 0xc08a5a,
+            details: [
+              path.stepCount ? `${path.stepCount} marches` : 'Nombre de marches non renseigné',
+              path.rampWheelchair
+                ? 'Rampe praticable en fauteuil'
+                : 'Pas de rampe fauteuil signalée',
+              path.handrail ? 'Main courante' : null,
+              path.surface ? `Revêtement : ${path.surface}` : null,
+            ],
+          });
+        }
+        continue;
+      }
 
     // Trottoir : petite épaisseur (dalle surélevée) pour un rendu plus lisible.
     if (path.kind === 'sidewalk') {
@@ -1372,25 +1795,26 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       continue;
     }
 
-    // Footway / cheminement piéton : dalle fine surélevée (teinte pavé).
-    if (path.kind === 'footway') {
-      const geom = ribbonSlab(pts, 1.4, 0.07);
+      // Footway / cheminement piéton : dalle fine surélevée (teinte pavé).
+      if (path.kind === 'footway') {
+        const geom = ribbonSlab(pts, 1.4, 0.07);
+        if (!geom) continue;
+        const mesh = new THREE.Mesh(geom, footMat);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+        continue;
+      }
+
+      // Routes (larges, asphalte) : ruban plat au sol.
+      const width = path.width ?? 5;
+      const geom = ribbon(pts, width);
       if (!geom) continue;
-      const mesh = new THREE.Mesh(geom, footMat);
-      mesh.castShadow = true;
+      const mesh = new THREE.Mesh(geom, roadMat);
+      mesh.position.y = 0.03;
       mesh.receiveShadow = true;
       scene.add(mesh);
-      continue;
     }
-
-    // Routes (larges, asphalte) : ruban plat au sol.
-    const width = path.width ?? 5;
-    const geom = ribbon(pts, width);
-    if (!geom) continue;
-    const mesh = new THREE.Mesh(geom, roadMat);
-    mesh.position.y = 0.03;
-    mesh.receiveShadow = true;
-    scene.add(mesh);
   }
 
   // --- Mobilier : bancs, arrets de bus, places PMR ---
@@ -1418,7 +1842,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     let cx = 0;
     let cz = 0;
     for (const [x, z] of ring) {
-      maxR = Math.max(maxR, Math.hypot(x, z));
+      grow(x, z);
       cx += x;
       cz += z;
     }
@@ -1440,26 +1864,44 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     scene.add(label);
   }
 
-  // --- Bancs : orientés par le tag OSM `direction` s'il existe, sinon alignés
-  // sur le cheminement le plus proche et tournés vers lui. ---
+  // Bancs et mobilier s'alignent d'abord sur le reseau pieton, a defaut sur la
+  // voirie ; les bordures et barrieres, elles, peuvent border l'un ou l'autre.
   const benchGuides = footLines.length ? footLines : roadLines;
+  const allGuides = [...footLines, ...roadLines];
   for (const bench of nb.benches ?? []) {
     const [x, z] = toLocal(bench.lng, bench.lat);
-    maxR = Math.max(maxR, Math.hypot(x, z));
+    grow(x, z);
     const seat = makeBench(x, z, bench.colour, bench.backrest !== false);
     seat.rotation.y = benchAngle(x, z, bench.direction, benchGuides);
-    scene.add(seat);
+    addInfo(seat, {
+      title: 'Banc',
+      details: [
+        bench.backrest === true ? 'avec dossier' : bench.backrest === false ? 'sans dossier' : null,
+        bench.material ? `Matériau : ${bench.material}` : null,
+        'Point de repos sur le trajet',
+      ],
+    });
   }
 
   // --- Arrêts de bus : quai orienté sur la voie, abri/banc si connus ---
+  // Retenus au passage pour le trajet : on garde le plus proche du lieu visé.
+  let nearestStop: {
+    x: number;
+    z: number;
+    name: string | null;
+    d: number;
+  } | null = null;
   for (const stop of nb.busStops ?? []) {
     const [x, z] = toLocal(stop.lng, stop.lat);
-    maxR = Math.max(maxR, Math.hypot(x, z));
+    grow(x, z);
+    const dStop = Math.hypot(x, z);
+    if (!nearestStop || dStop < nearestStop.d)
+      nearestStop = { x, z, name: stop.name ?? null, d: dStop };
     const near = nearestLineDir(x, z, roadLines);
     const angle = near?.angle ?? 0;
     // Côté chaussée : on oriente le quai et le poteau vers la rue.
     const side = near ? localSideZ(near.px - x, near.pz - z, angle) : 1;
-    scene.add(
+    addInfo(
       makeBusStop({
         x,
         z,
@@ -1469,7 +1911,17 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
         bench: stop.bench === true,
         tactile: stop.tactile === true,
         signTex: busSignTexture(stop.line),
-      })
+      }),
+      {
+        title: stop.name ? `Arrêt ${stop.name}` : 'Arrêt de bus',
+        colour: 0x2b6cb0,
+        details: [
+          stop.line ? `Ligne(s) : ${stop.line.split(';').join(', ')}` : null,
+          stop.shelter === true ? 'Abri voyageurs' : null,
+          stop.bench === true ? 'Banc à l’arrêt' : null,
+          stop.tactile === true ? 'Bande d’éveil de vigilance' : null,
+        ],
+      }
     );
     const lines: string[] = [];
     if (stop.name) lines.push(stop.name);
@@ -1498,6 +1950,9 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     });
     const joint = new THREE.CircleGeometry(0.32, 12);
     const lateral = (ri - (busRoutes.length - 1) / 2) * 0.85;
+    // Un groupe par ligne : le survol renvoie la ligne entiere, quel que soit
+    // le troncon designe.
+    const group = new THREE.Group();
     let longest: [number, number][] | null = null;
     for (const seg of route.segments) {
       const local = seg.map((p) => toLocal(p[0], p[1]));
@@ -1507,18 +1962,32 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
         if (geom) {
           const mesh = new THREE.Mesh(geom, mat);
           mesh.position.y = 0.14;
-          scene.add(mesh);
+          group.add(mesh);
         }
         // Pastilles aux sommets : le ruban reste continu dans les virages.
         for (const [jx, jz] of line) {
           const dot = new THREE.Mesh(joint, mat);
           dot.rotation.x = -Math.PI / 2;
           dot.position.set(jx, 0.14, jz);
-          scene.add(dot);
+          group.add(dot);
         }
         if (!longest || pathLength(line) > pathLength(longest)) longest = line;
       }
     }
+    // Les arrets desservis par cette ligne, d'apres le `route_ref` des arrets.
+    const served = (nb.busStops ?? [])
+      .filter((s) => s.line && route.ref && s.line.split(';').includes(route.ref))
+      .map((s) => s.name)
+      .filter((n): n is string => !!n);
+    addInfo(group, {
+      title: route.ref ? `Ligne de bus ${route.ref}` : 'Ligne de bus',
+      colour: col,
+      details: [
+        route.name,
+        served.length ? `Dessert : ${served.slice(0, 3).join(', ')}` : null,
+        'Tracé dans le voisinage · source OpenStreetMap',
+      ],
+    });
     if (longest) {
       const mid = longest[Math.floor(longest.length / 2)];
       const badge = makeLabel([route.ref ? `Bus ${route.ref}` : 'Bus'], {
@@ -1533,12 +2002,25 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
 
   // --- Places de stationnement : orientées par leur empreinte OSM si elle
   // existe, sinon par le parking qui les contient, sinon par la voirie. ---
-  const stallMat = new THREE.MeshStandardMaterial({ color: 0x2f6fb0, roughness: 0.85 });
-  const stallPlainMat = new THREE.MeshStandardMaterial({ color: 0x9aa3af, roughness: 0.9 });
-  const stallLineMat = new THREE.MeshStandardMaterial({ color: 0xf4f4f2, roughness: 0.8 });
+  const stallMat = new THREE.MeshStandardMaterial({
+    color: 0x2f6fb0,
+    roughness: 0.85,
+  });
+  const stallPlainMat = new THREE.MeshStandardMaterial({
+    color: 0x9aa3af,
+    roughness: 0.9,
+  });
+  const stallLineMat = new THREE.MeshStandardMaterial({
+    color: 0xf4f4f2,
+    roughness: 0.8,
+  });
+  // Place PMR la plus proche du lieu : point de départ du trajet.
+  let nearestPmr: { x: number; z: number; d: number } | null = null;
   for (const p of nb.parking ?? []) {
     const [x, z] = toLocal(p.lng, p.lat);
-    maxR = Math.max(maxR, Math.hypot(x, z));
+    grow(x, z);
+    const dPmr = Math.hypot(x, z);
+    if (p.pmr && (!nearestPmr || dPmr < nearestPmr.d)) nearestPmr = { x, z, d: dPmr };
 
     const { angle, long, short } = parkingStall({
       x,
@@ -1554,7 +2036,14 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     const holder = new THREE.Group();
     holder.position.set(x, 0, z);
     holder.rotation.y = angle;
-    scene.add(holder);
+    addInfo(holder, {
+      title: p.pmr ? 'Place de stationnement PMR' : 'Place de stationnement',
+      colour: p.pmr ? 0x2f6fb0 : 0x9aa3af,
+      details: [
+        `${long.toFixed(1)} m × ${short.toFixed(1)} m`,
+        p.ring ? 'Emprise cartographiée dans OpenStreetMap' : 'Orientation déduite du contexte',
+      ],
+    });
 
     const stall = new THREE.Mesh(
       new THREE.PlaneGeometry(long, short),
@@ -1591,27 +2080,137 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   );
   for (const f of nb.furniture ?? []) {
     const [x, z] = toLocal(f.lng, f.lat);
-    if (f.kind === 'tree' || f.kind === 'fountain') maxR = Math.max(maxR, Math.hypot(x, z));
+    if (f.kind === 'tree' || f.kind === 'fountain') grow(x, z);
     switch (f.kind) {
       case 'tree':
-        scene.add(makeTree(f, x, z, { trunk: trunkMat, leaf: leafMats }));
+        addInfo(makeTree(f, x, z, { trunk: trunkMat, leaf: leafMats }), {
+          title: 'Arbre',
+          details: [
+            f.height ? `Hauteur : ${f.height} m` : null,
+            f.crown ? `Couronne : ${f.crown} m` : null,
+            'Ombre sur le cheminement',
+          ],
+        });
         break;
       case 'fire_hydrant':
-        scene.add(makeHydrant(x, z, f.variant ?? null));
+        addInfo(makeHydrant(x, z, f.variant ?? null), {
+          title: 'Borne incendie',
+          colour: 0xb5322f,
+          details: [f.variant ? `Type : ${f.variant}` : null, 'Obstacle bas sur le trottoir'],
+        });
         break;
       case 'street_cabinet':
-        scene.add(makeStreetCabinet(x, z, nearestLineDir(x, z, roadLines)?.angle ?? 0));
+        addInfo(makeStreetCabinet(x, z, nearestLineDir(x, z, roadLines)?.angle ?? 0), {
+          title: 'Armoire de rue',
+          details: ['Réduit la largeur de passage'],
+        });
         break;
       case 'drinking_water':
-        scene.add(makeDrinkingWater(x, z));
+        addInfo(makeDrinkingWater(x, z), {
+          title: 'Eau potable',
+          colour: 0x5fa8c7,
+          details: ['Point d’eau accessible au public'],
+        });
         break;
       case 'fountain':
-        scene.add(makeFountain(x, z));
+        addInfo(makeFountain(x, z), { title: 'Fontaine', colour: 0x5fa8c7 });
+        break;
+      case 'bollard':
+        addInfo(makeBollard(x, z), {
+          title: 'Borne',
+          details: ['Obstacle bas, souvent en série'],
+        });
+        break;
+      case 'lamp':
+        addInfo(makeStreetLamp(x, z, nearestLineDir(x, z, roadLines)?.angle ?? 0), {
+          title: 'Lampadaire',
+          details: ['Éclairage du cheminement'],
+        });
+        break;
+      case 'waste':
+        addInfo(makeWasteBin(x, z), { title: 'Corbeille de rue' });
+        break;
+      case 'toilets': {
+        grow(x, z);
+        const ok = f.wheelchair === 'yes';
+        addInfo(makeToilets(x, z, nearestLineDir(x, z, allGuides)?.angle ?? 0, ok), {
+          title: f.name ?? 'Toilettes publiques',
+          colour: ok ? 0x2f6fb0 : 0x9aa6ab,
+          details: [
+            ok
+              ? 'Accessibles en fauteuil'
+              : f.wheelchair === 'no'
+                ? 'Non accessibles en fauteuil'
+                : 'Accessibilité non renseignée',
+          ],
+        });
+        break;
+      }
+      case 'elevator':
+        grow(x, z);
+        addInfo(makeElevator(x, z, f.wheelchair !== 'no'), {
+          title: f.name ?? 'Ascenseur',
+          colour: 0x2f6fb0,
+          details: [
+            f.wheelchair === 'no' ? 'Non accessible en fauteuil' : 'Accès vertical sans marches',
+          ],
+        });
+        break;
+      case 'barrier':
+        addInfo(makeBarrier(x, z, nearestLineDir(x, z, allGuides)?.angle ?? 0, f.variant ?? null), {
+          title: f.variant === 'cycle_barrier' || f.variant === 'chicane' ? 'Chicane' : 'Barrière',
+          colour: 0xb8783a,
+          details: [
+            f.variant ? `Type OSM : ${f.variant}` : null,
+            f.variant === 'cycle_barrier' || f.variant === 'chicane'
+              ? 'Passage étroit, souvent infranchissable en fauteuil'
+              : 'Réduit la largeur de passage',
+          ],
+        });
         break;
       default:
-        // Bancs et arrêts de bus sont déjà rendus depuis leurs propres listes ;
-        // le reste (bornes, lampadaires...) n'est pas encore représenté.
+        // Bancs, arrêts de bus et passages piétons sont déjà rendus depuis
+        // leurs propres listes.
         break;
+    }
+  }
+
+  // --- Bordures de trottoir : abaissees (franchissables) ou hautes (ressaut) ---
+  for (const k of nb.kerbs ?? []) {
+    const [x, z] = toLocal(k.lng, k.lat);
+    const lowered = k.kind === 'lowered' || k.kind === 'flush' || (k.height ?? 1) <= 0.03;
+    addInfo(makeKerb(x, z, nearestLineDir(x, z, allGuides)?.angle ?? 0, lowered), {
+      title: lowered ? 'Bordure abaissée' : 'Bordure haute',
+      colour: lowered ? 0x2f6fb0 : 0xa8563f,
+      details: [
+        lowered ? 'Franchissable en fauteuil' : 'Ressaut à franchir',
+        k.height != null ? `Hauteur : ${k.height} m` : null,
+        k.tactile ? 'Bande d’éveil de vigilance' : null,
+      ],
+    });
+  }
+
+  // --- Trajet : de la place PMR la plus proche à l'arrêt de bus le plus proche
+  // Les deux arrivées les plus courantes pour qui prépare une visite. Le tracé
+  // suit les cheminements cartographiés ; à défaut il relie les deux points en
+  // ligne droite, ce que l'infobulle annonce sans détour.
+  const tickers: ((dt: number) => void)[] = [];
+  if (nearestPmr && nearestStop) {
+    const route = findRoute(walkNet, [nearestPmr.x, nearestPmr.z], [nearestStop.x, nearestStop.z]);
+    const drawn = makeRoute(route.points, COLOR_ROUTE);
+    if (drawn) {
+      addInfo(drawn.group, {
+        title: 'Trajet à pied',
+        colour: COLOR_ROUTE,
+        details: [
+          `Place PMR → ${nearestStop.name ? `arrêt ${nearestStop.name}` : 'arrêt de bus'}`,
+          `Environ ${Math.round(route.length)} m`,
+          route.direct
+            ? 'Liaison directe : aucun cheminement cartographié entre les deux'
+            : 'Suit les trottoirs et cheminements d’OpenStreetMap',
+        ],
+      });
+      tickers.push(drawn.tick);
     }
   }
 
@@ -1665,7 +2264,20 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   controls.keyPanSpeed = 16;
   controls.update();
 
-  const c: Ctx = { renderer, scene, camera, controls, canvas, raf: 0, ro: null };
+  const c: Ctx = {
+    renderer,
+    scene,
+    camera,
+    controls,
+    canvas,
+    raf: 0,
+    ro: null,
+    hover: null,
+  };
+
+  // Survol : l'information vient a la demande, sous le curseur, au lieu
+  // d'etiquettes permanentes qui encombraient la scene.
+  c.hover = attachHover(canvas, camera, hoverables);
 
   const resize = (): void => {
     const nw = canvas.clientWidth || canvas.parentElement?.clientWidth || window.innerWidth;
@@ -1678,14 +2290,319 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   c.ro = new ResizeObserver(resize);
   c.ro.observe(canvas.parentElement ?? canvas);
 
+  // Horloge partagée : les animations avancent au temps écoulé, pas au nombre
+  // de trames, pour défiler à la même vitesse quel que soit l'affichage.
+  const clock = new THREE.Clock();
   const loop = (): void => {
     c.raf = requestAnimationFrame(loop);
+    const dt = Math.min(clock.getDelta(), 0.1);
+    for (const tick of tickers) tick(dt);
     controls.update();
     renderer.render(scene, camera);
   };
   loop();
 
   ctx = c;
+}
+
+/**
+ * Objets que la légende sait illustrer. Chaque clé est rendue à partir du même
+ * code que la scène : la vignette montre exactement ce qu'on verra.
+ */
+export type LegendKind =
+  | 'target'
+  | 'building'
+  | 'entrance-yes'
+  | 'entrance-no'
+  | 'entrance-other'
+  | 'sidewalk'
+  | 'footway'
+  | 'crossing'
+  | 'road'
+  | 'steps'
+  | 'steps-ramp'
+  | 'bench'
+  | 'bus_stop'
+  | 'bus_route'
+  | 'parking-pmr'
+  | 'parking'
+  | 'tree'
+  | 'fire_hydrant'
+  | 'street_cabinet'
+  | 'water'
+  | 'bollard'
+  | 'lamp'
+  | 'waste'
+  | 'toilets'
+  | 'elevator'
+  | 'barrier'
+  | 'kerb-low'
+  | 'route';
+
+/** Petit tronçon droit, pour illustrer un revêtement de cheminement. */
+function legendStrip(geom: THREE.BufferGeometry | null, colour: number, y = 0): THREE.Object3D {
+  const g = new THREE.Group();
+  if (!geom) return g;
+  const mesh = new THREE.Mesh(
+    geom,
+    new THREE.MeshStandardMaterial({
+      color: colour,
+      roughness: 0.95,
+      side: THREE.DoubleSide,
+    })
+  );
+  mesh.position.y = y;
+  g.add(mesh);
+  return g;
+}
+
+/** Construit l'objet représentatif d'une entrée de légende. */
+function legendObject(kind: LegendKind): THREE.Object3D | null {
+  const line: [number, number][] = [
+    [-2.2, 0],
+    [2.2, 0],
+  ];
+  const door = (wheelchair: string | null, prominent: boolean): OsmEntrance => ({
+    id: 'legend',
+    lng: 0,
+    lat: 0,
+    kind: prominent ? 'main' : 'yes',
+    wheelchair,
+    automatic: null,
+    door: null,
+    width: null,
+    stepCount: null,
+    kerbHeight: null,
+  });
+  const stairs = (ramp: boolean): OsmPath => ({
+    id: 'legend',
+    kind: 'steps',
+    coords: [],
+    stepCount: 6,
+    handrail: true,
+    rampWheelchair: ramp,
+    width: 1.8,
+  });
+
+  switch (kind) {
+    case 'target':
+    case 'building': {
+      const isTarget = kind === 'target';
+      const col = isTarget ? COLOR_TARGET : 0xc6c8cc;
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(6, 9, 6),
+        new THREE.MeshStandardMaterial({
+          color: col,
+          roughness: 0.85,
+          emissive: isTarget ? col : 0x000000,
+          emissiveIntensity: isTarget ? 0.12 : 0,
+        })
+      );
+      mesh.position.y = 4.5;
+      return mesh;
+    }
+    case 'entrance-yes':
+      return makeDoorMarker(door('yes', true), entranceColour('yes'), true, 1);
+    case 'entrance-no':
+      return makeDoorMarker(door('no', true), entranceColour('no'), true, 1);
+    case 'entrance-other': {
+      // Un pan de façade derrière le seuil : sans lui, la vignette se confond
+      // avec une dalle de trottoir.
+      const g = new THREE.Group();
+      const wall = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6, 1.7, 0.3),
+        new THREE.MeshStandardMaterial({ color: 0xc6c8cc, roughness: 0.9 })
+      );
+      wall.position.set(0, 0.85, -0.25);
+      g.add(wall);
+      g.add(makeDoorMarker(door(null, false), 0x8891a0, false, 1));
+      return g;
+    }
+    case 'sidewalk':
+      return legendStrip(ribbonSlab(line, 1.6, 0.12), 0xeef1f5);
+    case 'footway':
+      return legendStrip(ribbonSlab(line, 1.4, 0.07), 0xd7cdba);
+    case 'road':
+      return legendStrip(ribbon(line, 3), 0x8b9098);
+    case 'crossing': {
+      const g = new THREE.Group();
+      g.add(legendStrip(ribbon(line, 3.4), 0x8b9098));
+      const zebra = makeCrossing(line, new THREE.MeshStandardMaterial({ color: 0xf2f2f2 }));
+      if (zebra) g.add(zebra);
+      return g;
+    }
+    case 'steps':
+    case 'steps-ramp':
+      return makeSteps(
+        stairs(kind === 'steps-ramp'),
+        line,
+        new THREE.MeshStandardMaterial({ color: 0xc08a5a, roughness: 0.9 })
+      );
+    case 'bench':
+      return makeBench(0, 0, null, true);
+    case 'bus_stop':
+      return makeBusStop({
+        x: 0,
+        z: 0,
+        angle: 0,
+        side: 1,
+        shelter: true,
+        bench: true,
+        tactile: true,
+        signTex: busSignTexture(null),
+      });
+    case 'bus_route':
+      return legendStrip(ribbon(line, 0.62), 0x8b5cf6, 0.05);
+    case 'parking-pmr':
+    case 'parking': {
+      const pmr = kind === 'parking-pmr';
+      const g = new THREE.Group();
+      const stall = new THREE.Mesh(
+        new THREE.PlaneGeometry(5, pmr ? 3.3 : 2.5),
+        new THREE.MeshStandardMaterial({
+          color: pmr ? 0x2f6fb0 : 0x9aa3af,
+          roughness: 0.85,
+        })
+      );
+      stall.rotation.x = -Math.PI / 2;
+      g.add(stall);
+      return g;
+    }
+    case 'tree':
+      return makeTree({ id: 'legend', kind: 'tree', lng: 0, lat: 0, height: 6, crown: 3.4 }, 0, 0, {
+        trunk: new THREE.MeshStandardMaterial({
+          color: 0x6b5340,
+          roughness: 0.95,
+        }),
+        leaf: [
+          new THREE.MeshStandardMaterial({
+            color: 0x5f8f52,
+            roughness: 0.9,
+            flatShading: true,
+          }),
+        ],
+      });
+    case 'fire_hydrant':
+      return makeHydrant(0, 0, null);
+    case 'street_cabinet':
+      return makeStreetCabinet(0, 0, 0);
+    case 'water':
+      return makeDrinkingWater(0, 0);
+    case 'bollard':
+      return makeBollard(0, 0);
+    case 'lamp':
+      return makeStreetLamp(0, 0, 0);
+    case 'waste':
+      return makeWasteBin(0, 0);
+    case 'toilets':
+      return makeToilets(0, 0, 0, true);
+    case 'elevator':
+      return makeElevator(0, 0, true);
+    case 'barrier':
+      return makeBarrier(0, 0, 0, 'cycle_barrier');
+    case 'kerb-low':
+      return makeKerb(0, 0, 0, true);
+    case 'route': {
+      // Vignette figée : la vignette est une image, le défilement se voit dans
+      // la scène. On garde deux tirets pour que le motif se lise.
+      const drawn = makeRoute(
+        [
+          [-2.6, 0],
+          [2.6, 0],
+        ],
+        COLOR_ROUTE
+      );
+      return drawn ? drawn.group : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** Libere geometries et materiaux d'une sous-arborescence. */
+function disposeTree(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    const m = obj as THREE.Mesh;
+    if (m.geometry) m.geometry.dispose();
+    const mat = m.material;
+    if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+    else if (mat) (mat as THREE.Material).dispose();
+  });
+}
+
+/**
+ * Rend chaque entrée de légende en petite image, avec le même code que la
+ * scène : la légende montre l'objet réel plutôt qu'une pastille de couleur.
+ * Un seul contexte WebGL jetable est utilisé pour l'ensemble, puis libéré.
+ */
+export function renderLegendIcons(kinds: LegendKind[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  const size = 72;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+
+  let renderer: THREE.WebGLRenderer;
+  try {
+    renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+      // Indispensable pour relire le rendu via toDataURL.
+      preserveDrawingBuffer: true,
+    });
+  } catch {
+    return out; // pas de WebGL : la légende restera textuelle
+  }
+  renderer.setPixelRatio(2);
+  renderer.setSize(size, size, false);
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.15;
+
+  const scene = new THREE.Scene();
+  scene.add(new THREE.HemisphereLight(0xdfeaf5, 0x8d949d, 2.2));
+  const sun = new THREE.DirectionalLight(0xfff4e6, 1.6);
+  sun.position.set(4, 8, 5);
+  scene.add(sun);
+  const camera = new THREE.PerspectiveCamera(34, 1, 0.05, 400);
+
+  for (const kind of kinds) {
+    const obj = legendObject(kind);
+    if (!obj) continue;
+    scene.add(obj);
+    // Cadrage automatique : on recule d'autant que l'objet est grand, en vue
+    // trois quarts pour que le volume se lise.
+    const box = new THREE.Box3().setFromObject(obj);
+    if (box.isEmpty()) {
+      scene.remove(obj);
+      disposeTree(obj);
+      continue;
+    }
+    const span = box.getSize(new THREE.Vector3());
+    const centre = box.getCenter(new THREE.Vector3());
+    // Cadrage sur la sphère englobante : toutes les vignettes remplissent la
+    // même surface, qu'il s'agisse d'une dalle ou d'un lampadaire. On abaisse
+    // le point de vue pour les objets élancés, qui sinon se lisent mal.
+    const r = Math.max(span.length() / 2, 0.35);
+    const dist = (r / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2)) * 1.04;
+    const tall = span.y > Math.max(span.x, span.z) * 1.6;
+    const elev = THREE.MathUtils.degToRad(tall ? 15 : 34);
+    const azim = THREE.MathUtils.degToRad(38);
+    camera.position.set(
+      centre.x + dist * Math.cos(elev) * Math.sin(azim),
+      centre.y + dist * Math.sin(elev),
+      centre.z + dist * Math.cos(elev) * Math.cos(azim)
+    );
+    camera.lookAt(centre);
+    renderer.render(scene, camera);
+    out[kind] = canvas.toDataURL('image/png');
+    scene.remove(obj);
+    disposeTree(obj);
+  }
+
+  disposeTree(scene);
+  renderer.dispose();
+  return out;
 }
 
 /** Met a jour le theme (fond + sol) sans reconstruire la geometrie. */
@@ -1701,6 +2618,7 @@ export function stopScene3D(): void {
   if (!ctx) return;
   cancelAnimationFrame(ctx.raf);
   ctx.ro?.disconnect();
+  ctx.hover?.dispose();
   ctx.controls.dispose();
   ctx.scene.traverse((obj) => {
     const m = obj as THREE.Mesh;

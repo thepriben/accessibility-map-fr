@@ -242,6 +242,16 @@ a { color: var(--focus); }
   z-index: 5;
 }
 .scene3d.is-visible { opacity: 1; pointer-events: auto; }
+
+/* Repli : carte 2D affichee quand OSM ne decrit pas assez le voisinage pour
+   construire une scene 3D lisible. Meme calque que le canvas, sous la barre. */
+.scene3d-flat {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--scene-bg);
+}
+.scene3d-flat-map { width: 100%; height: 100%; }
 .scene3d-ui {
   position: absolute;
   inset: 0;
@@ -279,9 +289,46 @@ a { color: var(--focus); }
   font-size: 0.78rem;
 }
 .scene3d-legend summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
-.scene3d-legend ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-.scene3d-legend li { display: flex; align-items: center; gap: 8px; }
+.scene3d-legend-body { max-height: min(52vh, 420px); overflow-y: auto; }
+.scene3d-legend h4 {
+  margin: 8px 0 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #93a3b6;
+}
+.scene3d-legend h4:first-child { margin-top: 0; }
+.scene3d-legend ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.scene3d-legend li { display: flex; align-items: center; gap: 6px; }
+.lg-icon { width: 30px; height: 30px; flex: 0 0 auto; object-fit: contain; }
 .lg-sw { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+
+/* Infobulle de survol : l'information vient sous le curseur, a la demande,
+   plutot que par des etiquettes permanentes dans la scene. */
+.scene3d-tip {
+  position: absolute;
+  top: 0; left: 0;
+  /* Au-dessus de la barre et de la legende, qui sont au niveau 6. */
+  z-index: 7;
+  max-width: 260px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(12, 16, 22, 0.92);
+  color: #eaf0f7;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  display: grid;
+  gap: 2px;
+}
+/* `display: grid` ci-dessus l'emporte sur la regle UA de [hidden] : sans cela
+   l'infobulle reste affichee, vide, en permanence. */
+.scene3d-tip[hidden] { display: none; }
+.scene3d-tip strong { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; }
+.scene3d-tip span { color: #b9c4d2; }
+.tip-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
 
 /* Accessible list */
 .view-list { overflow-y: auto; padding: 16px; }

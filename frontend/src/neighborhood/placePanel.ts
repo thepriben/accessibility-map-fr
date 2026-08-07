@@ -60,10 +60,12 @@ export async function openPlacePanel(place: Place): Promise<void> {
       : '<li>Peu d\'informations d\'accessibilité renseignées.</li>';
   }
 
+  // Si Overpass ne répond pas, on propose quand même la bascule : la vue
+  // affichera la carte 2D du lieu plutôt que rien du tout.
   const neighborhood = await fetchNeighborhood(place.lng, place.lat, NEIGHBORHOOD_RADIUS_M).catch(
     () => null
   );
-  wire3DButton(panel, place, neighborhood);
+  wire3DButton(panel, place, neighborhood ?? emptyNeighborhood(place));
 }
 
 export function closePlacePanel(): void {

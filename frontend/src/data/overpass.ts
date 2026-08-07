@@ -86,7 +86,10 @@ export type FurnitureKind =
   | 'drinking_water'
   | 'waste'
   | 'fire_hydrant'
-  | 'street_cabinet';
+  | 'street_cabinet'
+  | 'toilets'
+  | 'elevator'
+  | 'barrier';
 
 export interface OsmFurniture {
   id: string;
@@ -97,8 +100,12 @@ export interface OsmFurniture {
   height?: number | null;
   /** Diamètre de couronne (m) si renseigné : arbres. */
   crown?: number | null;
-  /** Sous-type OSM (ex. `fire_hydrant:type`, `fountain`). */
+  /** Sous-type OSM (ex. `fire_hydrant:type`, `barrier`, `fountain`). */
   variant?: string | null;
+  /** Accessibilité fauteuil déclarée : surtout utile pour toilettes/ascenseurs. */
+  wheelchair?: string | null;
+  /** Nom OSM quand il existe (ascenseur, toilettes publiques…). */
+  name?: string | null;
 }
 
 /** Lieux d'accueil (POI) : hotels, restaurants, cafes, communautaires, cultuels. */
@@ -467,6 +474,13 @@ async function fetchNeighborhoodRaw(
       node["barrier"="kerb"](${b});
       node["kerb"](${b});
       node["entrance"](${b});
+      node["barrier"="bollard"](${b});
+      node["highway"="street_lamp"](${b});
+      node["amenity"="waste_basket"](${b});
+      node["amenity"="toilets"](${b});
+      way["amenity"="toilets"](${b});
+      node["highway"="elevator"](${b});
+      node["barrier"~"^(gate|lift_gate|swing_gate|kissing_gate|cycle_barrier|stile|block|chicane)$"](${b});
     );
     out geom tags;
     rel["route"~"^(bus|trolleybus)$"](${b})->.br;
@@ -641,7 +655,7 @@ async function fetchNeighborhoodRaw(
         });
       }
 
-      // Mobilier / obstacles / points d'eau (nodes).
+      // Mobilier / obstacles / services (nodes).
       const kind = furnitureKind(tags);
       if (kind) {
         out.furniture.push({
@@ -651,14 +665,28 @@ async function fetchNeighborhoodRaw(
           lat: el.lat,
           height: toNum(tags.height),
           crown: toNum(tags.diameter_crown),
-          variant: tags['fire_hydrant:type'] || tags.fountain || tags.leaf_type || null,
+          variant:
+            tags['fire_hydrant:type'] || tags.barrier || tags.fountain || tags.leaf_type || null,
+          wheelchair: tags.wheelchair || null,
+          name: tags.name || null,
         });
       }
     }
 
-    // Fontaine cartographiée en surface : on la ramène à son centre.
-    if (el.type === 'way' && tags.amenity === 'fountain' && pos) {
-      out.furniture.push({ id: eid, kind: 'fountain', lng: pos[0], lat: pos[1] });
+    // Équipements cartographiés en surface : on les ramène à leur centre.
+    if (el.type === 'way' && pos) {
+      if (tags.amenity === 'fountain') {
+        out.furniture.push({ id: eid, kind: 'fountain', lng: pos[0], lat: pos[1] });
+      } else if (tags.amenity === 'toilets') {
+        out.furniture.push({
+          id: eid,
+          kind: 'toilets',
+          lng: pos[0],
+          lat: pos[1],
+          wheelchair: tags.wheelchair || null,
+          name: tags.name || null,
+        });
+      }
     }
 
     // Cheminements pietons (footway / trottoir / marches / parc) et routes.
@@ -754,6 +782,19 @@ function sampleAlong(
   return pts;
 }
 
+// Obstacles de passage : chicanes et portillons reduisent la largeur utile et
+// bloquent souvent un fauteuil, au contraire d'une borne isolee.
+const BARRIER_KINDS = new Set([
+  'gate',
+  'lift_gate',
+  'swing_gate',
+  'kissing_gate',
+  'cycle_barrier',
+  'stile',
+  'block',
+  'chicane',
+]);
+
 function furnitureKind(tags: Record<string, string>): FurnitureKind | null {
   if (tags.amenity === 'bench') return 'bench';
   if (tags.highway === 'bus_stop' || tags.public_transport === 'platform') return 'bus_stop';
@@ -766,6 +807,9 @@ function furnitureKind(tags: Record<string, string>): FurnitureKind | null {
   if (tags.amenity === 'waste_basket') return 'waste';
   if (tags.emergency === 'fire_hydrant') return 'fire_hydrant';
   if (tags.man_made === 'street_cabinet') return 'street_cabinet';
+  if (tags.amenity === 'toilets') return 'toilets';
+  if (tags.highway === 'elevator') return 'elevator';
+  if (tags.barrier && BARRIER_KINDS.has(tags.barrier)) return 'barrier';
   return null;
 }
 

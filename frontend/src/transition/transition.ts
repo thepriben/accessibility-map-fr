@@ -1,6 +1,8 @@
 import type { NeighborhoodData } from '../data/overpass';
 import { getTheme } from '../theme';
 import type { Place, StreetPhoto } from '../types';
+import { hideFlatFallback, isNeighborhoodEmpty, showFlatFallback } from './flatFallback';
+import type { LegendKind } from '../three/scene3d';
 
 export interface ScenePayload {
   place: { nom: string; lng: number; lat: number; activite?: string; a11y?: string };
@@ -66,6 +68,14 @@ export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
     ui.querySelector('#scene3d-close')?.addEventListener('click', () => exitScene3D());
   }
 
+  // Voisinage sans bati ni cheminement : une scene 3D vide passerait pour une
+  // panne. On montre la carte 2D du lieu a la place.
+  if (isNeighborhoodEmpty(payload.neighborhood)) {
+    showFlatFallback(payload.place, canvas.parentElement ?? document.body);
+    dispatchSceneToggle(true);
+    return true;
+  }
+
   try {
     const mod = await loadScene();
     if (!mod) {
@@ -73,6 +83,7 @@ export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
       return false;
     }
     mod.startScene3D(canvas, payload);
+    paintLegendIcons(mod);
     dispatchSceneToggle(true);
     return true;
   } catch (err) {
@@ -104,70 +115,150 @@ export function exitScene3D(): void {
     ui.innerHTML = '';
   }
   lastPayload = null;
+  hideFlatFallback();
   sceneMod?.stopScene3D();
   dispatchSceneToggle(false);
 }
 
 function sceneUiHtml(payload: ScenePayload): string {
   // Bandeau minimal : nom du lieu + retour. Les statistiques et l'aide de
-  // navigation ont été retirées pour une vue plus épurée.
+  // navigation ont été retirées pour une vue plus épurée. Quand la 3D cède la
+  // place à la carte, la raison est dite ici plutôt qu'en surimpression.
+  const flat = isNeighborhoodEmpty(payload.neighborhood);
   return `
     <div class="scene3d-bar">
       <div class="scene3d-info">
         <strong>${escapeHtml(payload.place.nom)}</strong>
+        ${
+          flat
+            ? '<span class="scene3d-sub">OpenStreetMap ne décrit pas encore ce voisinage (ni bâtiment, ni cheminement) : voici la carte.</span>'
+            : ''
+        }
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
     </div>
-    ${legendHtml(payload)}`;
+    ${flat ? '' : legendHtml(payload)}`;
 }
 
-/** Ebauche de legende 3D : rappelle le code couleur des objets de la scene. */
+/**
+ * Légende 3D. Elle est volontairement courte : trois blocs qui répondent aux
+ * seules questions utiles avant de se déplacer (où est le lieu, par où on
+ * entre, ce qui gêne en chemin), et rien qui ne soit présent dans la scène.
+ * Chaque entrée est illustrée par une vignette rendue depuis l'objet 3D réel.
+ */
 function legendHtml(payload: ScenePayload): string {
   const nb = payload.neighborhood;
-  const sw = (c: string): string => `<span class="lg-sw" style="background:${c}"></span>`;
-  const items: string[] = [
-    `<li>${sw('#ef8b4e')} Lieu visé (bâtiment / entrée)</li>`,
-    `<li>${sw('#c6c8cc')} Autres bâtiments</li>`,
-  ];
-  // Entrées : couleur = accessibilité fauteuil déclarée dans OSM.
   const ent = nb.entrances ?? [];
-  if (ent.some((e) => e.wheelchair === 'yes'))
-    items.push(`<li>${sw('#2f6fb0')} Entrée accessible</li>`);
-  if (ent.some((e) => e.wheelchair === 'limited'))
-    items.push(`<li>${sw('#d99a2b')} Entrée à accès limité</li>`);
-  if (ent.some((e) => e.wheelchair === 'no'))
-    items.push(`<li>${sw('#c0483f')} Entrée non accessible</li>`);
-  if (ent.length) items.push(`<li>${sw('#8891a0')} Autre entrée (seuil au sol)</li>`);
-  if (nb.paths.some((p) => p.kind === 'road')) items.push(`<li>${sw('#8b9098')} Routes</li>`);
-  if (nb.paths.some((p) => p.kind === 'sidewalk'))
-    items.push(`<li>${sw('#eef1f5')} Trottoirs</li>`);
-  if (nb.paths.some((p) => p.kind === 'footway'))
-    items.push(`<li>${sw('#d7cdba')} Cheminements piétons</li>`);
-  if (nb.paths.some((p) => p.kind === 'crossing'))
-    items.push(`<li>${sw('#f2f2f2')} Passages piétons</li>`);
-  if (nb.paths.some((p) => p.kind === 'steps'))
-    items.push(`<li>${sw('#c08a5a')} Escaliers (obstacle)</li>`);
-  if (nb.paths.some((p) => p.kind === 'steps' && p.rampWheelchair))
-    items.push(`<li>${sw('#2f6fb0')} Rampe praticable en fauteuil</li>`);
-  if (nb.benches?.length) items.push(`<li>${sw('#9c6b3f')} Bancs</li>`);
-  if (nb.busStops?.length) items.push(`<li>${sw('#2b6cb0')} Arrêts de bus</li>`);
-  if (nb.busRoutes?.length) items.push(`<li>${sw('#8b5cf6')} Lignes de bus</li>`);
-  if (nb.parking?.some((p) => p.pmr)) items.push(`<li>${sw('#2f6fb0')} Places PMR</li>`);
-  if (nb.parking?.some((p) => !p.pmr))
-    items.push(`<li>${sw('#9aa3af')} Places de stationnement</li>`);
-  if (nb.parkingAreas?.length) items.push(`<li>${sw('#6b7382')} Parkings</li>`);
-  if (nb.furniture?.some((f) => f.kind === 'tree')) items.push(`<li>${sw('#5f8f52')} Arbres</li>`);
-  if (nb.furniture?.some((f) => f.kind === 'fire_hydrant'))
-    items.push(`<li>${sw('#b5322f')} Bornes incendie</li>`);
-  if (nb.furniture?.some((f) => f.kind === 'street_cabinet'))
-    items.push(`<li>${sw('#76806f')} Armoires de rue</li>`);
-  if (nb.furniture?.some((f) => f.kind === 'drinking_water' || f.kind === 'fountain'))
-    items.push(`<li>${sw('#5fa8c7')} Eau (fontaines, eau potable)</li>`);
+  const path = (k: string): boolean => nb.paths.some((p) => p.kind === k);
+  const furn = (k: string): boolean => (nb.furniture ?? []).some((f) => f.kind === k);
+
+  const groups: { title: string; entries: [LegendKind, string][] }[] = [
+    {
+      title: 'Se repérer',
+      entries: [
+        ['target', 'Lieu visé'],
+        ['building', 'Autres bâtiments'],
+      ],
+    },
+    {
+      title: 'Entrer',
+      entries: [
+        ent.some((e) => e.wheelchair === 'yes') && (['entrance-yes', 'Entrée accessible'] as const),
+        ent.some((e) => e.wheelchair === 'no' || e.wheelchair === 'limited') &&
+          (['entrance-no', 'Entrée difficile ou impossible'] as const),
+        ent.some((e) => !e.wheelchair) && (['entrance-other', 'Entrée, accès non renseigné'] as const),
+      ].filter(Boolean) as [LegendKind, string][],
+    },
+    {
+      title: 'Cheminer',
+      entries: [
+        path('sidewalk') && (['sidewalk', 'Trottoir'] as const),
+        path('footway') && (['footway', 'Cheminement piéton'] as const),
+        path('crossing') && (['crossing', 'Passage piéton'] as const),
+        path('road') && (['road', 'Chaussée'] as const),
+        nb.paths.some((p) => p.kind === 'steps' && !p.rampWheelchair) &&
+          (['steps', 'Escalier'] as const),
+        nb.paths.some((p) => p.kind === 'steps' && p.rampWheelchair) &&
+          (['steps-ramp', 'Escalier avec rampe'] as const),
+        nb.kerbs?.some(
+          (k) => k.kind === 'lowered' || k.kind === 'flush' || (k.height ?? 1) <= 0.03
+        ) &&
+          (['kerb-low', 'Bordure abaissée'] as const),
+        furn('barrier') && (['barrier', 'Barrière, chicane'] as const),
+      ].filter(Boolean) as [LegendKind, string][],
+    },
+    {
+      title: 'Sur place',
+      entries: [
+        nb.busStops?.length &&
+          nb.parking?.some((p) => p.pmr) &&
+          (['route', 'Trajet place PMR → arrêt de bus'] as const),
+        nb.busStops?.length && (['bus_stop', 'Arrêt de bus'] as const),
+        nb.busRoutes?.length && (['bus_route', 'Ligne de bus'] as const),
+        nb.parking?.some((p) => p.pmr) && (['parking-pmr', 'Place PMR'] as const),
+        nb.parking?.some((p) => !p.pmr) && (['parking', 'Stationnement'] as const),
+        nb.benches?.length && (['bench', 'Banc'] as const),
+        furn('toilets') && (['toilets', 'Toilettes'] as const),
+        furn('elevator') && (['elevator', 'Ascenseur'] as const),
+        (furn('drinking_water') || furn('fountain')) && (['water', 'Point d’eau'] as const),
+        furn('tree') && (['tree', 'Arbre'] as const),
+        furn('bollard') && (['bollard', 'Borne'] as const),
+        furn('lamp') && (['lamp', 'Lampadaire'] as const),
+        furn('waste') && (['waste', 'Corbeille'] as const),
+        furn('fire_hydrant') && (['fire_hydrant', 'Borne incendie'] as const),
+        furn('street_cabinet') && (['street_cabinet', 'Armoire de rue'] as const),
+      ].filter(Boolean) as [LegendKind, string][],
+    },
+  ];
+
+  // Vignette vide au depart : elle est remplie une fois la scene construite,
+  // avec le rendu des vrais objets 3D.
+  const blank =
+    'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  const body = groups
+    .filter((g) => g.entries.length)
+    .map(
+      (g) => `
+        <h4>${g.title}</h4>
+        <ul>${g.entries
+          .map(
+            ([kind, label]) =>
+              `<li><img class="lg-icon" data-lg="${kind}" src="${blank}" alt="" width="30" height="30">${escapeHtml(
+                label
+              )}</li>`
+          )
+          .join('')}</ul>`
+    )
+    .join('');
+
   return `
     <details class="scene3d-legend" open>
       <summary>Légende</summary>
-      <ul>${items.join('')}</ul>
+      <div class="scene3d-legend-body">${body}</div>
     </details>`;
+}
+
+/**
+ * Remplace les vignettes vides de la légende par le rendu des objets 3D.
+ * En l'absence de WebGL, l'entrée reste lisible : seul le texte subsiste.
+ */
+function paintLegendIcons(mod: SceneMod): void {
+  const imgs = Array.from(
+    document.querySelectorAll<HTMLImageElement>('#scene3d-ui img.lg-icon[data-lg]')
+  );
+  if (!imgs.length) return;
+  const kinds = [...new Set(imgs.map((i) => i.dataset.lg as LegendKind))];
+  let icons: Record<string, string> = {};
+  try {
+    icons = mod.renderLegendIcons(kinds);
+  } catch (err) {
+    console.warn('Vignettes de légende indisponibles', err);
+  }
+  for (const img of imgs) {
+    const src = icons[img.dataset.lg ?? ''];
+    if (src) img.src = src;
+    else img.remove();
+  }
 }
 
 function escapeHtml(s: string): string {

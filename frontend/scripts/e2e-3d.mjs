@@ -1,0 +1,212 @@
+/**
+ * Parcours de bout en bout : recherche d'un lieu, ouverture du popup, passage
+ * en 3D, puis survol d'un objet de la scène. Capture une image à chaque étape.
+ * Vérifie ce que ni le typage ni les tests géométriques ne voient : la légende
+ * s'illustre, l'infobulle apparaît, le repli 2D s'affiche là où OSM est vide.
+ *
+ *   node --experimental-websocket scripts/e2e-3d.mjs <base-url> <requête> <préfixe>
+ */
+import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+
+const [base, query, prefix = '.tmp-e2e'] = process.argv.slice(2);
+if (!base || !query) {
+  console.error('usage: e2e-3d.mjs <base-url> <requête> [préfixe]');
+  process.exit(2);
+}
+
+const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const PORT = 9800 + Math.floor(Math.random() * 300);
+const chrome = spawn(
+  CHROME,
+  [
+    '--headless=new',
+    `--remote-debugging-port=${PORT}`,
+    '--disable-gpu',
+    '--enable-unsafe-swiftshader',
+    '--use-gl=angle',
+    '--use-angle=swiftshader',
+    '--hide-scrollbars',
+    '--no-first-run',
+    '--window-size=1280,860',
+    'about:blank',
+  ],
+  { stdio: 'ignore' }
+);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function endpoint() {
+  for (let i = 0; i < 80; i += 1) {
+    try {
+      const r = await fetch(`http://127.0.0.1:${PORT}/json/version`);
+      if (r.ok) return (await r.json()).webSocketDebuggerUrl;
+    } catch {
+      /* pas encore prêt */
+    }
+    await sleep(150);
+  }
+  throw new Error('Chrome injoignable');
+}
+
+function client(ws) {
+  let id = 0;
+  const pending = new Map();
+  ws.addEventListener('message', (ev) => {
+    const m = JSON.parse(ev.data);
+    const p = pending.get(m.id);
+    if (!p) return;
+    pending.delete(m.id);
+    if (m.error) p.reject(new Error(m.error.message));
+    else p.resolve(m.result);
+  });
+  return (method, params = {}, sessionId) =>
+    new Promise((resolve, reject) => {
+      id += 1;
+      pending.set(id, { resolve, reject });
+      ws.send(JSON.stringify({ id, method, params, sessionId }));
+    });
+}
+
+try {
+  const ws = new WebSocket(await endpoint());
+  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
+  const send = client(ws);
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
+  const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
+  const call = (m, p) => send(m, p, sessionId);
+
+  await call('Page.enable');
+  await call('Runtime.enable');
+  // --sans-osm : coupe Overpass pour vérifier le repli en carte 2D.
+  if (process.argv.includes('--sans-osm')) {
+    await call('Network.enable');
+    await call('Network.setBlockedURLs', { urls: ['*/api/interpreter*'] });
+  }
+  const logs = [];
+  ws.addEventListener('message', (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.method === 'Runtime.consoleAPICalled' && m.params.type !== 'debug')
+      logs.push(`[${m.params.type}] ${m.params.args.map((a) => a.value ?? a.description ?? '').join(' ')}`);
+    if (m.method === 'Runtime.exceptionThrown')
+      logs.push(`[exception] ${m.params.exceptionDetails.exception?.description ?? m.params.exceptionDetails.text}`);
+  });
+
+  const evaluate = async (expression) => {
+    const r = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? 'échec');
+    return r.result.value;
+  };
+  const shot = async (name) => {
+    const s = await call('Page.captureScreenshot', { format: 'png' });
+    const file = `${prefix}-${name}.png`;
+    writeFileSync(file, Buffer.from(s.data, 'base64'));
+    console.log(`capture: ${file}`);
+  };
+  /** Attend qu'une expression devienne vraie. */
+  const until = async (expr, label, ms = 90000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (await evaluate(expr)) return true;
+      await sleep(400);
+    }
+    throw new Error(`délai dépassé : ${label}`);
+  };
+
+  // Toute panne en cours de route est photographiée : c'est ce qui permet de
+  // comprendre l'échec sans rejouer le parcours à la main.
+  const guard = async (fn) => {
+    try {
+      await fn();
+    } catch (err) {
+      await shot('echec');
+      console.error(String(err.message ?? err));
+      console.log('--- console ---\n' + logs.join('\n'));
+      throw err;
+    }
+  };
+
+  await call('Page.navigate', { url: base });
+  await until('!!document.getElementById("search-input")', 'chargement de la page');
+  // Les points arrivent via un worker : on attend que la recherche réponde.
+  await sleep(6000);
+
+  // Recherche : on simule la saisie puis l'évènement d'entrée.
+  await evaluate(`(() => {
+    const i = document.getElementById('search-input');
+    i.value = ${JSON.stringify(query)};
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await guard(() =>
+    until(
+      '!!document.querySelector("#search-results li button, #search-results li")',
+      'résultats de recherche',
+      30000
+    )
+  );
+  await shot('1-recherche');
+
+  // La liste réagit à `mousedown` (pour devancer la perte de focus du champ).
+  await evaluate(`(() => {
+    const el = document.querySelector('#search-results li');
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  })()`);
+  // Depuis la recherche, c'est la fiche detaillee qui s'ouvre (pas le popup) :
+  // son bouton n'apparait qu'une fois le voisinage OSM recupere.
+  await guard(() => until('!!document.querySelector("#btn-3d, .ppop-3d")', 'bouton 3D'));
+  await shot('2-fiche');
+
+  await evaluate(`document.querySelector('#btn-3d, .ppop-3d').click()`);
+  await guard(() =>
+    until(
+      '!!document.querySelector("#scene3d-ui .scene3d-legend") || !!document.getElementById("scene3d-flat")',
+      'vue 3D ou repli 2D'
+    )
+  );
+  await sleep(4000);
+  await shot('3-vue3d');
+
+  const legend = await evaluate(`(() => {
+    const imgs = [...document.querySelectorAll('#scene3d-ui img.lg-icon')];
+    return {
+      repli: !!document.getElementById('scene3d-flat'),
+      entrees: imgs.length,
+      illustrees: imgs.filter((i) => (i.src || '').startsWith('data:image/png')).length,
+      titres: [...document.querySelectorAll('#scene3d-ui .scene3d-legend li')].map((li) => li.textContent.trim()),
+    };
+  })()`);
+  console.log('légende:', JSON.stringify(legend));
+
+  // Survol : on balaie le centre de la scène pour déclencher une infobulle.
+  let tip = null;
+  const sweep = [];
+  for (let x = 220; x <= 820; x += 60) for (let y = 260; y <= 620; y += 60) sweep.push([x, y]);
+  for (const [x, y] of sweep) {
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 });
+    await sleep(120);
+    tip = await evaluate(
+      `(() => { const t = document.querySelector('.scene3d-tip'); return t && t.offsetParent !== null ? t.textContent.trim() : null; })()`
+    );
+    if (tip) {
+      await shot('4-survol');
+      break;
+    }
+  }
+  console.log('infobulle:', tip ?? 'aucune');
+
+  // L'infobulle doit disparaître hors des objets : une règle CSS trop faible
+  // la laissait affichée en permanence, vide.
+  if (tip) {
+    await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 120, y: 130, buttons: 0 });
+    await sleep(600);
+    const visible = await evaluate(
+      `(() => { const t = document.querySelector('.scene3d-tip'); return !!t && t.offsetParent !== null; })()`
+    );
+    console.log('infobulle masquée hors objet:', visible ? 'NON (défaut)' : 'oui');
+  }
+
+  if (logs.length) console.log('--- console ---\n' + logs.join('\n'));
+  ws.close();
+} finally {
+  chrome.kill();
+}
