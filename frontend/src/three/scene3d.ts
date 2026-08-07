@@ -531,17 +531,50 @@ function entranceColour(wheelchair: string | null): number {
   return 0x8891a0; // non renseigné
 }
 
-/** Libellé court d'une entrée, avec ce qui conditionne son franchissement. */
-function entranceLabel(e: OsmEntrance): string[] {
-  const head = e.kind === 'main' ? 'Entrée principale' : 'Entrée';
-  const bits: string[] = [];
-  if (e.wheelchair === 'yes') bits.push('accessible');
-  else if (e.wheelchair === 'limited') bits.push('accès limité');
-  else if (e.wheelchair === 'no') bits.push('non accessible');
-  if (e.automatic) bits.push('porte automatique');
-  if (e.stepCount) bits.push(`${e.stepCount} marche${e.stepCount > 1 ? 's' : ''}`);
-  if (e.kerbHeight != null && e.kerbHeight > 0) bits.push(`ressaut ${e.kerbHeight} m`);
-  return bits.length ? [head, bits.join(' · ')] : [head];
+/**
+ * Plaque ♿ apposée sur la porte, comme la signalétique réelle d'un accès PMR :
+ * plus lisible et moins encombrant qu'une étiquette flottante.
+ */
+function makeAccessPlaque(colour: number): THREE.Mesh {
+  const cv = document.createElement('canvas');
+  cv.width = 128;
+  cv.height = 128;
+  const g = cv.getContext('2d')!;
+  g.fillStyle = cssColour(colour);
+  g.fillRect(0, 0, 128, 128);
+  g.fillStyle = '#ffffff';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.font = '700 96px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+  g.fillText('\u267F', 64, 70);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.anisotropy = 4;
+  return new THREE.Mesh(
+    new THREE.PlaneGeometry(0.36, 0.36),
+    new THREE.MeshBasicMaterial({ map: tex })
+  );
+}
+
+/**
+ * Marches du seuil, construites devant la porte : l'obstacle se voit au lieu de
+ * s'écrire. `outward` indique de quel côté (±Z local) se trouve l'extérieur.
+ */
+function makeThresholdSteps(count: number, width: number, outward: number): THREE.Group {
+  const g = new THREE.Group();
+  const n = Math.min(count, 6);
+  const rise = 0.16;
+  const depth = 0.32;
+  const mat = new THREE.MeshStandardMaterial({ color: 0xb9b0a4, roughness: 0.95 });
+  for (let i = 0; i < n; i += 1) {
+    // La marche la plus haute touche la porte, les suivantes descendent vers la rue.
+    const h = rise * (n - i);
+    const step = new THREE.Mesh(new THREE.BoxGeometry(width, h, depth), mat);
+    step.position.set(0, h / 2, outward * (0.14 + depth * (i + 0.5)));
+    step.castShadow = true;
+    step.receiveShadow = true;
+    g.add(step);
+  }
+  return g;
 }
 
 /**
@@ -559,47 +592,84 @@ function entranceScore(e: OsmEntrance): number {
   return s;
 }
 
-/** Porte matérialisée sur la façade : encadrement coloré + vantail en retrait. */
-function makeDoorMarker(colour: number, prominent: boolean): THREE.Group {
+/**
+ * Porte matérialisée sur la façade. L'encadrement est fait de deux montants et
+ * d'un linteau, et le vantail est en retrait dans le mur : un panneau plein,
+ * lui, se lisait comme une stèle posée contre le bâtiment. `outward` donne le
+ * côté extérieur (±Z local), pour poser signalétique et marches du bon côté.
+ */
+function makeDoorMarker(
+  e: OsmEntrance,
+  colour: number,
+  prominent: boolean,
+  outward: number
+): THREE.Group {
   const g = new THREE.Group();
-  const w = prominent ? 1.3 : 0.95;
-  const h = prominent ? 2.3 : 1.95;
-  const frame = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, 0.18),
-    new THREE.MeshStandardMaterial({
-      color: colour,
-      roughness: 0.55,
-      metalness: 0.1,
-      emissive: colour,
-      emissiveIntensity: prominent ? 0.4 : 0.1,
-    })
-  );
-  frame.position.y = h / 2;
-  frame.castShadow = true;
-  g.add(frame);
 
+  // Entrée d'un autre bâtiment : un simple seuil au sol suffit à se repérer.
+  // Dresser une porte devant chaque façade du voisinage surchargeait la scène.
+  if (!prominent) {
+    const sill = new THREE.Mesh(
+      new THREE.BoxGeometry(1.1, 0.07, 0.55),
+      new THREE.MeshStandardMaterial({ color: colour, roughness: 0.85 })
+    );
+    sill.position.set(0, 0.035, outward * 0.3);
+    sill.receiveShadow = true;
+    g.add(sill);
+    return g;
+  }
+
+  const w = 1.35;
+  const h = 2.3;
+  const jamb = 0.16;
+  const frameMat = new THREE.MeshStandardMaterial({
+    color: colour,
+    roughness: 0.55,
+    metalness: 0.1,
+    emissive: colour,
+    emissiveIntensity: 0.35,
+  });
+
+  for (const s of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(jamb, h, 0.22), frameMat);
+    post.position.set((s * (w - jamb)) / 2, h / 2, 0);
+    post.castShadow = true;
+    g.add(post);
+  }
+  const lintel = new THREE.Mesh(new THREE.BoxGeometry(w, 0.18, 0.22), frameMat);
+  lintel.position.y = h - 0.09;
+  lintel.castShadow = true;
+  g.add(lintel);
+
+  // Vantail enfonce dans l'epaisseur du mur : creuse l'ouverture.
   const leaf = new THREE.Mesh(
-    new THREE.BoxGeometry(w - 0.3, h - 0.28, 0.22),
+    new THREE.BoxGeometry(w - 2 * jamb, h - 0.18, 0.08),
     new THREE.MeshStandardMaterial({ color: 0x2b3038, roughness: 0.5, metalness: 0.15 })
   );
-  leaf.position.y = (h - 0.28) / 2 + 0.02;
+  leaf.position.set(0, (h - 0.18) / 2, -outward * 0.07);
   g.add(leaf);
 
-  if (prominent) {
-    // Halo au sol : on repère la porte même quand la façade est de biais.
-    const disc = new THREE.Mesh(
-      new THREE.RingGeometry(0.8, 1.2, 28),
-      new THREE.MeshBasicMaterial({
-        color: colour,
-        transparent: true,
-        opacity: 0.55,
-        side: THREE.DoubleSide,
-      })
-    );
-    disc.rotation.x = -Math.PI / 2;
-    disc.position.y = 0.1;
-    g.add(disc);
+  // Halo au sol : on repère la porte même quand la façade est de biais.
+  const disc = new THREE.Mesh(
+    new THREE.RingGeometry(0.8, 1.2, 28),
+    new THREE.MeshBasicMaterial({
+      color: colour,
+      transparent: true,
+      opacity: 0.55,
+      side: THREE.DoubleSide,
+    })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.1;
+  g.add(disc);
+
+  if (e.wheelchair === 'yes') {
+    const plaque = makeAccessPlaque(colour);
+    plaque.rotation.y = outward > 0 ? 0 : Math.PI;
+    plaque.position.set(w / 2 - 0.3, 1.62, outward * 0.13);
+    g.add(plaque);
   }
+  if (e.stepCount) g.add(makeThresholdSteps(e.stepCount, w, outward));
   return g;
 }
 
@@ -1094,7 +1164,14 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // Hierarchie volontaire : toutes les entrees du batiment vise (c'est
   // l'information qu'on vient chercher), mais seulement les entrees principales
   // des autres batiments, en sourdine, pour se reperer sans surcharger.
-  const doors: { e: OsmEntrance; x: number; z: number; angle: number; target: boolean }[] = [];
+  const doors: {
+    e: OsmEntrance;
+    x: number;
+    z: number;
+    angle: number;
+    outward: number;
+    target: boolean;
+  }[] = [];
   for (const e of payload.neighborhood.entrances ?? []) {
     const [ex, ez] = toLocal(e.lng, e.lat);
     // On rattache l'entree a la façade la plus proche : le nœud OSM est sur le
@@ -1113,24 +1190,27 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     if (!best || best.dist > 2.5) continue;
     const isTarget = bestIdx === targetIdx;
     if (!isTarget && e.kind !== 'main') continue;
-    doors.push({ e, x: best.px, z: best.pz, angle: best.angle, target: isTarget });
+    // Extérieur = à l'opposé du centre du bâtiment, pour poser pictogramme et
+    // marches du bon côté de la porte.
+    const ring = facades[bestIdx]!;
+    let cx = 0;
+    let cz = 0;
+    for (const [rx, rz] of ring) {
+      cx += rx;
+      cz += rz;
+    }
+    cx /= ring.length;
+    cz /= ring.length;
+    const outward = -localSideZ(cx - best.px, cz - best.pz, best.angle);
+    doors.push({ e, x: best.px, z: best.pz, angle: best.angle, outward, target: isTarget });
   }
 
   for (const d of doors) {
     const colour = d.target ? entranceColour(d.e.wheelchair) : 0x8891a0;
-    const door = makeDoorMarker(colour, d.target);
+    const door = makeDoorMarker(d.e, colour, d.target, d.outward);
     door.position.set(d.x, 0, d.z);
     door.rotation.y = d.angle; // encadrement dans le plan de la façade
     scene.add(door);
-    if (d.target) {
-      const label = makeLabel(entranceLabel(d.e), {
-        bg: `${cssColour(colour)}ee`,
-        fg: '#ffffff',
-        worldH: 1.4,
-      });
-      label.position.set(d.x, 3.4, d.z);
-      scene.add(label);
-    }
   }
 
   // --- Marqueur de l'acces vise ---

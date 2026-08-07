@@ -137,7 +137,7 @@ function legendHtml(payload: ScenePayload): string {
     items.push(`<li>${sw('#d99a2b')} Entrée à accès limité</li>`);
   if (ent.some((e) => e.wheelchair === 'no'))
     items.push(`<li>${sw('#c0483f')} Entrée non accessible</li>`);
-  if (ent.length) items.push(`<li>${sw('#8891a0')} Entrée (accès non renseigné)</li>`);
+  if (ent.length) items.push(`<li>${sw('#8891a0')} Autre entrée (seuil au sol)</li>`);
   if (nb.paths.some((p) => p.kind === 'road')) items.push(`<li>${sw('#8b9098')} Routes</li>`);
   if (nb.paths.some((p) => p.kind === 'sidewalk'))
     items.push(`<li>${sw('#eef1f5')} Trottoirs</li>`);
