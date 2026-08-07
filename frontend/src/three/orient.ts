@@ -38,6 +38,45 @@ export function clipToRadius(points: P2[], radius: number): P2[][] {
   return runs;
 }
 
+/** Position et direction locale à une distance donnée le long d'une polyligne. */
+export interface AlongPoint {
+  x: number;
+  z: number;
+  /** Direction unitaire du segment courant. */
+  ux: number;
+  uz: number;
+}
+
+/**
+ * Point situé à `dist` mètres du début d'une polyligne. Sert à répartir
+ * régulièrement les marches d'un escalier ou les poteaux d'une main courante.
+ * Au-delà de la longueur totale, renvoie l'extrémité.
+ */
+export function pointAlong(points: P2[], dist: number): AlongPoint | null {
+  if (points.length < 2) return null;
+  let acc = 0;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const [x0, z0] = points[i];
+    const [x1, z1] = points[i + 1];
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    if (len < 1e-9) continue;
+    if (acc + len >= dist) {
+      const t = (dist - acc) / len;
+      return {
+        x: x0 + (x1 - x0) * t,
+        z: z0 + (z1 - z0) * t,
+        ux: (x1 - x0) / len,
+        uz: (z1 - z0) / len,
+      };
+    }
+    acc += len;
+  }
+  const [xa, za] = points[points.length - 2];
+  const [xb, zb] = points[points.length - 1];
+  const len = Math.hypot(xb - xa, zb - za) || 1;
+  return { x: xb, z: zb, ux: (xb - xa) / len, uz: (zb - za) / len };
+}
+
 /**
  * Ferme un anneau (dernier point = premier) pour le traiter comme une
  * polyligne, et pouvoir chercher le point de façade le plus proche.

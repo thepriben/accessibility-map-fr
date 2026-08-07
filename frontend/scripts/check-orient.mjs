@@ -22,6 +22,8 @@ const {
   nearestLineDir,
   orientedBox,
   parkingStall,
+  pathLength,
+  pointAlong,
 } = mod;
 
 let failures = 0;
@@ -151,6 +153,51 @@ console.log('\n— Entree : projection sur la façade —');
   const east = nearestLineDir(10.6, 0, [closed]);
   check('façade est reperee', east.px, 10, 1e-9);
   checkAxis('encadrement suit la façade est', bearing(...longAxis(east.angle)), 0);
+}
+
+console.log('\n— Escalier : repartition des marches le long de la volee —');
+// Volee en L : 6 m vers l'est, puis 4 m vers le sud (z positif = sud).
+{
+  const line = [[0, 0], [6, 0], [6, 4]];
+  check('longueur totale', pathLength(line), 10, 1e-9);
+
+  const start = pointAlong(line, 0);
+  check('depart au premier point (x)', start.x, 0, 1e-9);
+  check('depart : direction vers l’est', start.ux, 1, 1e-9);
+
+  // A 8 m, on est sur le second segment, 2 m apres le coude.
+  const mid = pointAlong(line, 8);
+  check('apres le coude (x)', mid.x, 6, 1e-9);
+  check('apres le coude (z)', mid.z, 2, 1e-9);
+  check('direction devient plein sud', mid.uz, 1, 1e-9);
+
+  // Au-dela de la longueur : on reste a l'extremite, sans deborder.
+  const end = pointAlong(line, 99);
+  check('arrivee bornee a l’extremite (x)', end.x, 6, 1e-9);
+  check('arrivee bornee a l’extremite (z)', end.z, 4, 1e-9);
+
+  // Les marches doivent etre equidistantes et couvrir toute la volee.
+  const n = 10;
+  const going = pathLength(line) / n;
+  let prev = null;
+  let ecartMax = 0;
+  for (let k = 0; k < n; k += 1) {
+    const at = pointAlong(line, (k + 0.5) * going);
+    if (prev) ecartMax = Math.max(ecartMax, Math.abs(Math.hypot(at.x - prev.x, at.z - prev.z) - going));
+    prev = at;
+  }
+  // Ecart tolere au coude : la corde y est plus courte que l'arc parcouru.
+  check('marches equidistantes (ecart max)', ecartMax, 0, 0.3);
+
+  // La main courante se decale perpendiculairement : elle doit rester a la
+  // demi-largeur de la volee, des deux cotes.
+  const at = pointAlong(line, 3);
+  const half = 0.8;
+  const left = [at.x + -at.uz * half, at.z + at.ux * half];
+  const right = [at.x - -at.uz * half, at.z - at.ux * half];
+  check('main courante gauche a la bonne distance', Math.hypot(left[0] - at.x, left[1] - at.z), half, 1e-9);
+  check('main courante droite a la bonne distance', Math.hypot(right[0] - at.x, right[1] - at.z), half, 1e-9);
+  check('mains courantes de part et d’autre', Math.hypot(left[0] - right[0], left[1] - right[1]), half * 2, 1e-9);
 }
 
 console.log(failures ? `\n${failures} verification(s) en echec` : '\nToutes les verifications passent');

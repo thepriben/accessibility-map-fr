@@ -147,6 +147,8 @@ function legendHtml(payload: ScenePayload): string {
     items.push(`<li>${sw('#f2f2f2')} Passages piétons</li>`);
   if (nb.paths.some((p) => p.kind === 'steps'))
     items.push(`<li>${sw('#c08a5a')} Escaliers (obstacle)</li>`);
+  if (nb.paths.some((p) => p.kind === 'steps' && p.rampWheelchair))
+    items.push(`<li>${sw('#2f6fb0')} Rampe praticable en fauteuil</li>`);
   if (nb.benches?.length) items.push(`<li>${sw('#9c6b3f')} Bancs</li>`);
   if (nb.busStops?.length) items.push(`<li>${sw('#2b6cb0')} Arrêts de bus</li>`);
   if (nb.busRoutes?.length) items.push(`<li>${sw('#8b5cf6')} Lignes de bus</li>`);

@@ -6,6 +6,7 @@ import type {
   OsmBusRoute,
   OsmEntrance,
   OsmFurniture,
+  OsmPath,
 } from '../data/overpass';
 import {
   alignX,
@@ -16,6 +17,7 @@ import {
   nearestLineDir,
   parkingStall,
   pathLength,
+  pointAlong,
 } from './orient';
 
 // Couleurs OSM nommees usuelles (tag colour) -> hex, pour les bancs.
@@ -1032,45 +1034,122 @@ function makeFountain(x: number, z: number): THREE.Group {
   return g;
 }
 
+/** Hauteur de montée d'un escalier telle qu'elle est representee dans la scene. */
+const STEPS_MAX_RISE = 1.1;
+
 /**
- * Escalier : marches successives le long du cheminement. L'altitude réelle est
- * inconnue, on suggère la montée — l'important est de voir l'obstacle.
+ * Escalier : volée de marches, main courante et rampe d'accès quand OSM les
+ * signale.
+ *
+ * Le voisinage est rendu sur un sol plat, sans modèle de terrain : une volée à
+ * sa hauteur réelle finirait suspendue en l'air, déconnectée du cheminement
+ * qu'elle rejoint. On comprime donc la montée, l'information utile ici étant
+ * « il y a N marches, avec ou sans rampe », pas leur altitude exacte.
  */
 function makeSteps(
+  path: OsmPath,
   points: [number, number][],
-  count: number | null,
   mat: THREE.Material
 ): THREE.Group | null {
   const total = pathLength(points);
   if (points.length < 2 || total < 0.6) return null;
+
+  // `incline=down` décrit la pente dans le sens des nœuds OSM : on parcourt
+  // alors la volée à l'envers pour que la montée aille dans le bon sens.
+  const line = path.incline === 'down' ? [...points].reverse() : points;
+  const n = Math.max(2, Math.min(path.stepCount ?? Math.round(total / 0.3), 24));
+  const riseTotal = Math.min(n * 0.17, STEPS_MAX_RISE);
+  const rise = riseTotal / n;
+  const going = total / n;
+  const width = Math.min(Math.max(path.width ?? 1.8, 1), 6);
+
   const g = new THREE.Group();
-  const n = Math.max(3, Math.min(count ?? Math.round(total / 0.3), 30));
-  const step = total / n;
-  const rise = Math.min(0.16, 2.4 / n);
-  const unit = new THREE.BoxGeometry(step * 0.92, 1, 1.7);
-  let done = 0;
-  for (let i = 0; i < points.length - 1; i += 1) {
-    const [x0, z0] = points[i];
-    const [x1, z1] = points[i + 1];
-    const dx = x1 - x0;
-    const dz = z1 - z0;
-    const len = Math.hypot(dx, dz);
-    if (len < 1e-3) continue;
-    const ux = dx / len;
-    const uz = dz / len;
-    const angle = alignX(ux, uz);
-    for (let t = step / 2; t < len; t += step) {
-      const y = rise * (done + 1);
-      const tread = new THREE.Mesh(unit, mat);
-      tread.scale.y = y;
-      tread.position.set(x0 + ux * t, y / 2, z0 + uz * t);
-      tread.rotation.y = angle;
-      tread.castShadow = true;
-      tread.receiveShadow = true;
-      g.add(tread);
-      done += 1;
+  const unit = new THREE.BoxGeometry(going * 0.98, 1, width);
+  for (let k = 0; k < n; k += 1) {
+    const at = pointAlong(line, (k + 0.5) * going);
+    if (!at) continue;
+    const y = rise * (k + 1);
+    const tread = new THREE.Mesh(unit, mat);
+    tread.scale.y = y;
+    tread.position.set(at.x, y / 2, at.z);
+    tread.rotation.y = alignX(at.ux, at.uz);
+    tread.castShadow = true;
+    tread.receiveShadow = true;
+    g.add(tread);
+  }
+
+  // Palier haut : la volée se termine sur un replat plutôt que sur une arête
+  // dans le vide.
+  const top = pointAlong(line, total);
+  if (top) {
+    const landing = new THREE.Mesh(new THREE.BoxGeometry(0.7, riseTotal, width), mat);
+    landing.position.set(top.x + top.ux * 0.34, riseTotal / 2, top.z + top.uz * 0.34);
+    landing.rotation.y = alignX(top.ux, top.uz);
+    landing.castShadow = true;
+    landing.receiveShadow = true;
+    g.add(landing);
+  }
+
+  // Main courante : elle change tout pour une personne à mobilité réduite qui
+  // emprunte quand même l'escalier.
+  if (path.handrail) {
+    const railMat = new THREE.MeshStandardMaterial({
+      color: 0x8a8f98,
+      roughness: 0.35,
+      metalness: 0.65,
+    });
+    for (const side of [-1, 1]) {
+      const pts: THREE.Vector3[] = [];
+      for (let k = 0; k <= n; k += 1) {
+        const at = pointAlong(line, Math.min(k * going, total));
+        if (!at) continue;
+        // Décalage perpendiculaire au sens de la montée.
+        pts.push(
+          new THREE.Vector3(
+            at.x + -at.uz * side * (width / 2 - 0.08),
+            rise * k + 0.95,
+            at.z + at.ux * side * (width / 2 - 0.08)
+          )
+        );
+      }
+      if (pts.length < 2) continue;
+      const curve = new THREE.CatmullRomCurve3(pts);
+      const rail = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, Math.max(n * 2, 8), 0.035, 6, false),
+        railMat
+      );
+      rail.castShadow = true;
+      g.add(rail);
     }
   }
+
+  // Rampe praticable en fauteuil : c'est ce qui fait la difference entre un
+  // escalier infranchissable et un passage possible. On la marque en bleu PMR.
+  if (path.rampWheelchair) {
+    const rampMat = new THREE.MeshStandardMaterial({
+      color: 0x2f6fb0,
+      roughness: 0.8,
+      emissive: 0x2f6fb0,
+      emissiveIntensity: 0.15,
+    });
+    const rampW = 1.1;
+    const offset = width / 2 + rampW / 2 + 0.1;
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(going * 1.02, 1, rampW), rampMat);
+    for (let k = 0; k < n; k += 1) {
+      const at = pointAlong(line, (k + 0.5) * going);
+      if (!at) continue;
+      // Plan incliné approché par tranches : évite une géométrie sur mesure.
+      const y = rise * (k + 0.5);
+      const seg = slab.clone();
+      seg.scale.y = y;
+      seg.position.set(at.x + -at.uz * offset, y / 2, at.z + at.ux * offset);
+      seg.rotation.y = alignX(at.ux, at.uz);
+      seg.castShadow = true;
+      seg.receiveShadow = true;
+      g.add(seg);
+    }
+  }
+
   return g;
 }
 
@@ -1275,9 +1354,9 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       continue;
     }
 
-    // Escalier : marches matérialisées le long du cheminement.
+    // Escalier : volée de marches, main courante et rampe si OSM les signale.
     if (path.kind === 'steps') {
-      const stairs = makeSteps(pts, path.stepCount ?? null, stepsMat);
+      const stairs = makeSteps(path, pts, stepsMat);
       if (stairs) scene.add(stairs);
       continue;
     }

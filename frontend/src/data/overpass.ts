@@ -130,8 +130,12 @@ export interface OsmPath {
   wheelchair?: string | null;
   /** Nombre de marches (`step_count`) pour un escalier. */
   stepCount?: number | null;
-  /** Rampe présente le long des marches (`ramp`). */
+  /** Rampe le long des marches (`ramp`) : souvent une goulotte à vélo/poussette. */
   ramp?: boolean | null;
+  /** Rampe praticable en fauteuil (`ramp:wheelchair`) : tout autre chose. */
+  rampWheelchair?: boolean | null;
+  /** Main courante (`handrail`). */
+  handrail?: boolean | null;
 }
 
 /**
@@ -662,8 +666,10 @@ async function fetchNeighborhoodRaw(
       let kind: OsmPath['kind'] | null = null;
       let width: number | undefined;
       const rw = roadWidth(tags.highway);
-      if (tags.highway === 'steps') kind = 'steps';
-      else if (tags.footway === 'crossing') kind = 'crossing';
+      if (tags.highway === 'steps') {
+        kind = 'steps';
+        width = toNum(tags.width) ?? undefined;
+      } else if (tags.footway === 'crossing') kind = 'crossing';
       else if (tags.footway === 'sidewalk') kind = 'sidewalk';
       else if (tags.highway === 'footway' || tags.highway === 'pedestrian') kind = 'footway';
       else if (rw != null) {
@@ -682,7 +688,12 @@ async function fetchNeighborhoodRaw(
           tactile: parseBool(tags.tactile_paving),
           wheelchair: tags.wheelchair || null,
           stepCount: toNum(tags.step_count),
-          ramp: parseBool(tags.ramp) ?? parseBool(tags['ramp:wheelchair']),
+          ramp: parseBool(tags.ramp),
+          rampWheelchair: parseBool(tags['ramp:wheelchair']),
+          handrail:
+            parseBool(tags.handrail) ??
+            parseBool(tags['handrail:left']) ??
+            parseBool(tags['handrail:right']),
         });
       }
     }
