@@ -72,6 +72,9 @@ function decode(i: number): Record<string, unknown> {
   const vv = d.v[i];
   const props: Record<string, unknown> = {
     uuid: String(i),
+    // Position dans le jeu de donnees : c'est par elle que l'on retrouve
+    // l'identifiant Acceslibre, publie a part (voir data/acceslibre.ts).
+    srcIndex: i,
     slug: '',
     nom: d.nom[i] || '',
     activite: d.act[i] || null,

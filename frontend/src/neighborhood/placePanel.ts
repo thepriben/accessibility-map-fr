@@ -1,4 +1,5 @@
 import { knownCriteria } from '../a11y';
+import { acceslibreUrl } from '../data/acceslibre';
 import { fetchNeighborhood, type NeighborhoodData } from '../data/overpass';
 import { clearHighlight, flyToPlace, highlightPlace } from '../map/mapView';
 import { state } from '../state';
@@ -45,6 +46,15 @@ export async function openPlacePanel(place: Place): Promise<void> {
   panel.innerHTML = skeleton(place);
   panel.querySelector('#panel-close')?.addEventListener('click', closePlacePanel);
 
+  // Lien vers la fiche d'origine : l'identifiant Acceslibre vit hors du jeu de
+  // donnees principal, on l'ajoute donc des qu'il est resolu.
+  void acceslibreUrl(place.properties).then((url) => {
+    const slot = panel.querySelector('.panel-source');
+    if (!url || !slot) return;
+    slot.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">Voir sur Acceslibre &nearr;</a>`;
+    (slot as HTMLElement).hidden = false;
+  });
+
   const criteria = knownCriteria(place.properties);
   const critEl = panel.querySelector('#panel-criteria');
   if (critEl) {
@@ -86,7 +96,7 @@ function skeleton(place: Place): string {
       <button id="panel-close" type="button" class="panel-close" aria-label="Fermer la fiche">&times;</button>
     </div>
     <p class="panel-meta">${esc([p.activite, p.adresse].filter(Boolean).join(' - '))}</p>
-    ${p.web_url ? `<p><a href="${esc(p.web_url)}" target="_blank" rel="noopener">Voir sur Acceslibre &nearr;</a></p>` : ''}
+    <p class="panel-source" hidden></p>
 
     <h3 class="panel-sub">Accessibilité</h3>
     <ul id="panel-criteria" class="panel-criteria"><li>Chargement...</li></ul>

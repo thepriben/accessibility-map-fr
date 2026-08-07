@@ -30,6 +30,12 @@ export interface PlaceProperties extends A11yFlags {
   code_insee?: string | null;
   code_postal?: string | null;
   web_url?: string | null;
+  /**
+   * Rang du lieu dans le jeu de donnees compact. L'export CSV ne portant pas
+   * d'URL de fiche, c'est par ce rang qu'on retrouve son identifiant Acceslibre
+   * (voir data/acceslibre.ts).
+   */
+  srcIndex?: number | null;
   site_internet?: string | null;
 }
 

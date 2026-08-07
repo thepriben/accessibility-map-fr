@@ -131,19 +131,31 @@ try {
   // Les points arrivent via un worker : on attend que la recherche réponde.
   await sleep(6000);
 
-  // Recherche : on simule la saisie puis l'évènement d'entrée.
-  await evaluate(`(() => {
-    const i = document.getElementById('search-input');
-    i.value = ${JSON.stringify(query)};
-    i.dispatchEvent(new Event('input', { bubbles: true }));
-  })()`);
-  await guard(() =>
-    until(
-      '!!document.querySelector("#search-results li button, #search-results li")',
-      'résultats de recherche',
-      30000
-    )
-  );
+  // Recherche : on simule la saisie puis l'évènement d'entrée. Sur le jeu de
+  // données complet, le worker peut n'être pas encore prêt : une frappe partie
+  // trop tôt reste sans réponse, donc on la rejoue jusqu'à obtenir des résultats.
+  const type = () =>
+    evaluate(`(() => {
+      const i = document.getElementById('search-input');
+      i.value = ${JSON.stringify(query)};
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+  await guard(async () => {
+    const end = Date.now() + 120000;
+    for (;;) {
+      await type();
+      try {
+        await until(
+          '!!document.querySelector("#search-results li button, #search-results li")',
+          'résultats de recherche',
+          5000
+        );
+        return;
+      } catch (err) {
+        if (Date.now() > end) throw err;
+      }
+    }
+  });
   await shot('1-recherche');
 
   // La liste réagit à `mousedown` (pour devancer la perte de focus du champ).

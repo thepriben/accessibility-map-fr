@@ -65,6 +65,8 @@ function expandColumnar(d: ColumnarPoints): GeoJSON.FeatureCollection {
     // L'objet properties est partage entre la Place et la Feature (memoire).
     const props: Record<string, unknown> = {
       uuid: String(i),
+      // Voir data/acceslibre.ts : l'index sert a retrouver la fiche d'origine.
+      srcIndex: i,
       slug: '',
       nom: d.nom[i] || '',
       activite: d.act[i] || null,

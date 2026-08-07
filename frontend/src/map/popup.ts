@@ -1,5 +1,6 @@
 import maplibregl, { type Map as MlMap, type Popup } from 'maplibre-gl';
 import { knownCriteria } from '../a11y';
+import { acceslibreUrl } from '../data/acceslibre';
 import { prefetchNeighborhood } from '../data/overpass';
 import { prefetchScene3D } from '../transition/transition';
 import type { Place } from '../types';
@@ -56,13 +57,16 @@ export function showPlacePopup(
       <button type="button" class="ppop-btn ppop-3d">Voisinage en 3D</button>
       <button type="button" class="ppop-btn ppop-details">Fiche détaillée</button>
     </div>
-    ${
-      p.web_url
-        ? `<p class="ppop-source"><a href="${esc(
-            p.web_url
-          )}" target="_blank" rel="noopener">Voir sur Acceslibre &nearr;</a></p>`
-        : ''
-    }`;
+    <p class="ppop-source" hidden></p>`;
+
+  // Le lien vers la fiche d'origine se résout à part : l'identifiant Acceslibre
+  // n'est pas dans le jeu de données principal (voir data/acceslibre.ts).
+  void acceslibreUrl(p).then((url) => {
+    const slot = el.querySelector('.ppop-source');
+    if (!url || !slot) return;
+    slot.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">Voir sur Acceslibre &nearr;</a>`;
+    (slot as HTMLElement).hidden = false;
+  });
 
   el.querySelector('.ppop-3d')?.addEventListener('click', () => handlers.onEnter3D(place));
   el.querySelector('.ppop-details')?.addEventListener('click', () => handlers.onDetails(place));
