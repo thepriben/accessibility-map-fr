@@ -23,6 +23,7 @@ function emptyNeighborhood(place: Place): NeighborhoodData {
     benches: [],
     kerbs: [],
     busRoutes: [],
+    entrances: [],
   };
 }
 

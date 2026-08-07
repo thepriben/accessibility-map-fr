@@ -34,6 +34,7 @@ const query = `[out:json][timeout:25];
       way["amenity"="fountain"](${b});
       node["barrier"="kerb"](${b});
       node["kerb"](${b});
+      node["entrance"](${b});
     );
     out geom tags;
     rel["route"~"^(bus|trolleybus)$"](${b})->.br;
@@ -82,6 +83,7 @@ for (const el of main) {
   if (t.amenity === 'fountain') bump('fontaine');
   if (t.kerb || t.barrier === 'kerb') bump(`bordure (${t.kerb ?? '?'})`);
   if (t.highway === 'bus_stop') bump(`arret bus (abri=${t.shelter ?? '?'} banc=${t.bench ?? '?'})`);
+  if (t.entrance) bump(`entree ${t.entrance} (fauteuil=${t.wheelchair ?? '?'})`);
 }
 
 console.log(`elements: ${els.length} (dont ${main.length} hors lignes de bus)`);

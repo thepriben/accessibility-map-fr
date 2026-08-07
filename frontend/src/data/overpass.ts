@@ -135,6 +135,31 @@ export interface OsmPath {
 }
 
 /**
+ * Entrée cartographiée sur le contour d'un bâtiment. C'est l'information la
+ * plus utile avant de se déplacer : par où entrer, et si ce passage est
+ * praticable en fauteuil.
+ */
+export interface OsmEntrance {
+  id: string;
+  lng: number;
+  lat: number;
+  /** Valeur du tag `entrance` : main, yes, service, exit, staircase… */
+  kind: string;
+  /** `wheelchair` : yes / limited / no, ou null si non renseigné. */
+  wheelchair: string | null;
+  /** Porte automatique (`automatic_door`). */
+  automatic: boolean | null;
+  /** Type de porte (`door`) : hinged, sliding, revolving, no… */
+  door: string | null;
+  /** Largeur de passage (m) si renseignée. */
+  width: number | null;
+  /** Marches à franchir au seuil (`step_count`). */
+  stepCount: number | null;
+  /** Ressaut au seuil (`kerb:height`, m) si renseigné. */
+  kerbHeight: number | null;
+}
+
+/**
  * Bordure de trottoir : élément déterminant pour un fauteuil (abaissée =
  * franchissable, haute = obstacle).
  */
@@ -226,6 +251,7 @@ export interface NeighborhoodData {
   benches: OsmBench[];
   kerbs: OsmKerb[];
   busRoutes: OsmBusRoute[];
+  entrances: OsmEntrance[];
 }
 
 function bbox(lng: number, lat: number, radiusM: number): string {
@@ -436,6 +462,7 @@ async function fetchNeighborhoodRaw(
       way["amenity"="fountain"](${b});
       node["barrier"="kerb"](${b});
       node["kerb"](${b});
+      node["entrance"](${b});
     );
     out geom tags;
     rel["route"~"^(bus|trolleybus)$"](${b})->.br;
@@ -467,6 +494,7 @@ async function fetchNeighborhoodRaw(
     benches: [],
     kerbs: [],
     busRoutes: [],
+    entrances: [],
   };
 
   // Le `foreach` des lignes de bus émet ses éléments après le bloc principal :
@@ -565,6 +593,22 @@ async function fetchNeighborhoodRaw(
           shelter: parseBool(tags.shelter),
           bench: parseBool(tags.bench),
           tactile: parseBool(tags.tactile_paving),
+        });
+      }
+
+      // Entrée : par où entrer, et à quelles conditions.
+      if (tags.entrance) {
+        out.entrances.push({
+          id: eid,
+          lng: el.lon,
+          lat: el.lat,
+          kind: tags.entrance,
+          wheelchair: tags.wheelchair || null,
+          automatic: parseBool(tags.automatic_door),
+          door: tags.door || null,
+          width: toNum(tags.width),
+          stepCount: toNum(tags.step_count),
+          kerbHeight: toNum(tags['kerb:height']),
         });
       }
 

@@ -38,6 +38,17 @@ export function clipToRadius(points: P2[], radius: number): P2[][] {
   return runs;
 }
 
+/**
+ * Ferme un anneau (dernier point = premier) pour le traiter comme une
+ * polyligne, et pouvoir chercher le point de façade le plus proche.
+ */
+export function closeRing(ring: P2[]): P2[] {
+  if (ring.length < 2) return ring;
+  const [fx, fz] = ring[0];
+  const [lx, lz] = ring[ring.length - 1];
+  return fx === lx && fz === lz ? ring : [...ring, [fx, fz]];
+}
+
 /** Rotation Y alignant l'axe local +X sur la direction (dx, dz). */
 export function alignX(dx: number, dz: number): number {
   return Math.atan2(-dz, dx);

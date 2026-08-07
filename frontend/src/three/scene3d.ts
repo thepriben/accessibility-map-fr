@@ -4,12 +4,14 @@ import type {
   NeighborhoodData,
   OsmBuilding,
   OsmBusRoute,
+  OsmEntrance,
   OsmFurniture,
 } from '../data/overpass';
 import {
   alignX,
   benchAngle,
   clipToRadius,
+  closeRing,
   localSideZ,
   nearestLineDir,
   parkingStall,
@@ -517,9 +519,98 @@ function offsetPolyline(points: [number, number][], off: number): [number, numbe
   return ribbonEdges(points, off * 2).left;
 }
 
-/** Ajoute un marqueur d'entree (pin) a l'origine = point Access'libre visé. */
-function addEntranceMarker(scene: THREE.Scene, hasTargetBuilding: boolean): void {
+/**
+ * Couleur d'une entrée selon l'accessibilité fauteuil déclarée dans OSM. On
+ * reprend le bleu PMR déjà utilisé par les places de stationnement plutôt qu'un
+ * vert, pour garder une seule convention « accessible » dans la scène.
+ */
+function entranceColour(wheelchair: string | null): number {
+  if (wheelchair === 'yes') return 0x2f6fb0;
+  if (wheelchair === 'limited') return 0xd99a2b;
+  if (wheelchair === 'no') return 0xc0483f;
+  return 0x8891a0; // non renseigné
+}
+
+/** Libellé court d'une entrée, avec ce qui conditionne son franchissement. */
+function entranceLabel(e: OsmEntrance): string[] {
+  const head = e.kind === 'main' ? 'Entrée principale' : 'Entrée';
+  const bits: string[] = [];
+  if (e.wheelchair === 'yes') bits.push('accessible');
+  else if (e.wheelchair === 'limited') bits.push('accès limité');
+  else if (e.wheelchair === 'no') bits.push('non accessible');
+  if (e.automatic) bits.push('porte automatique');
+  if (e.stepCount) bits.push(`${e.stepCount} marche${e.stepCount > 1 ? 's' : ''}`);
+  if (e.kerbHeight != null && e.kerbHeight > 0) bits.push(`ressaut ${e.kerbHeight} m`);
+  return bits.length ? [head, bits.join(' · ')] : [head];
+}
+
+/**
+ * Priorité d'une entrée pour représenter l'accès principal : une entrée de
+ * service ou de secours ne doit pas l'emporter sur une entrée praticable.
+ */
+function entranceScore(e: OsmEntrance): number {
+  let s = 0;
+  if (e.kind === 'main') s += 4;
+  else if (e.kind === 'yes') s += 2;
+  else if (e.kind === 'service' || e.kind === 'emergency' || e.kind === 'exit') s -= 3;
+  if (e.wheelchair === 'yes') s += 3;
+  else if (e.wheelchair === 'limited') s += 1;
+  else if (e.wheelchair === 'no') s -= 1;
+  return s;
+}
+
+/** Porte matérialisée sur la façade : encadrement coloré + vantail en retrait. */
+function makeDoorMarker(colour: number, prominent: boolean): THREE.Group {
+  const g = new THREE.Group();
+  const w = prominent ? 1.3 : 0.95;
+  const h = prominent ? 2.3 : 1.95;
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, 0.18),
+    new THREE.MeshStandardMaterial({
+      color: colour,
+      roughness: 0.55,
+      metalness: 0.1,
+      emissive: colour,
+      emissiveIntensity: prominent ? 0.4 : 0.1,
+    })
+  );
+  frame.position.y = h / 2;
+  frame.castShadow = true;
+  g.add(frame);
+
+  const leaf = new THREE.Mesh(
+    new THREE.BoxGeometry(w - 0.3, h - 0.28, 0.22),
+    new THREE.MeshStandardMaterial({ color: 0x2b3038, roughness: 0.5, metalness: 0.15 })
+  );
+  leaf.position.y = (h - 0.28) / 2 + 0.02;
+  g.add(leaf);
+
+  if (prominent) {
+    // Halo au sol : on repère la porte même quand la façade est de biais.
+    const disc = new THREE.Mesh(
+      new THREE.RingGeometry(0.8, 1.2, 28),
+      new THREE.MeshBasicMaterial({
+        color: colour,
+        transparent: true,
+        opacity: 0.55,
+        side: THREE.DoubleSide,
+      })
+    );
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.y = 0.1;
+    g.add(disc);
+  }
+  return g;
+}
+
+/** Ajoute le marqueur (pin) de l'acces vise, a l'origine ou sur l'entree OSM. */
+function addEntranceMarker(
+  scene: THREE.Scene,
+  hasTargetBuilding: boolean,
+  at?: [number, number]
+): void {
   const group = new THREE.Group();
+  if (at) group.position.set(at[0], 0, at[1]);
   // Un pin plus discret quand un batiment cible est deja mis en valeur.
   const headY = hasTargetBuilding ? 5.2 : 3.4;
 
@@ -962,13 +1053,20 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     toLocal
   );
   let hasTargetBuilding = false;
+  // Façades effectivement dessinees (empreintes retrecies), indexees comme les
+  // batiments : servent a poser les portes au bon endroit sur le mur.
+  const facades: ([number, number][] | null)[] = [];
   for (let bi = 0; bi < payload.neighborhood.buildings.length; bi += 1) {
     const b = payload.neighborhood.buildings[bi];
-    if (!b.ring || b.ring.length < 3) continue;
+    if (!b.ring || b.ring.length < 3) {
+      facades.push(null);
+      continue;
+    }
     const ring: [number, number][] = b.ring.map((p) => toLocal(p[0], p[1]));
     for (const [x, z] of ring) maxR = Math.max(maxR, Math.hypot(x, z));
     // Empreinte legerement retrecie -> les routes/trottoirs restent visibles.
     const inner = insetRing(ring, 0.6);
+    facades.push(inner);
     // Le rotateX(-PI/2) applique ensuite inverse le signe de z ; on pre-inverse z
     // (et on inverse l'ordre pour conserver l'orientation des faces) afin que le
     // batiment tombe au meme endroit que les routes/trottoirs (pas de miroir).
@@ -992,10 +1090,61 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     scene.add(edges);
   }
 
-  // --- Marqueur d'entree (point Access'libre) a l'origine ---
-  // Represente l'acces du lieu vise : utile quand le point n'est pas dans une
-  // empreinte de batiment, et pour s'orienter dans le voisinage.
-  addEntranceMarker(scene, hasTargetBuilding);
+  // --- Entrees OSM ---
+  // Hierarchie volontaire : toutes les entrees du batiment vise (c'est
+  // l'information qu'on vient chercher), mais seulement les entrees principales
+  // des autres batiments, en sourdine, pour se reperer sans surcharger.
+  const doors: { e: OsmEntrance; x: number; z: number; angle: number; target: boolean }[] = [];
+  for (const e of payload.neighborhood.entrances ?? []) {
+    const [ex, ez] = toLocal(e.lng, e.lat);
+    // On rattache l'entree a la façade la plus proche : le nœud OSM est sur le
+    // contour d'origine, donc a ~0,6 m de la façade dessinee.
+    let bestIdx = -1;
+    let best: ReturnType<typeof nearestLineDir> = null;
+    for (let bi = 0; bi < facades.length; bi += 1) {
+      const inner = facades[bi];
+      if (!inner) continue;
+      const hit = nearestLineDir(ex, ez, [closeRing(inner)]);
+      if (hit && (!best || hit.dist < best.dist)) {
+        best = hit;
+        bestIdx = bi;
+      }
+    }
+    if (!best || best.dist > 2.5) continue;
+    const isTarget = bestIdx === targetIdx;
+    if (!isTarget && e.kind !== 'main') continue;
+    doors.push({ e, x: best.px, z: best.pz, angle: best.angle, target: isTarget });
+  }
+
+  for (const d of doors) {
+    const colour = d.target ? entranceColour(d.e.wheelchair) : 0x8891a0;
+    const door = makeDoorMarker(colour, d.target);
+    door.position.set(d.x, 0, d.z);
+    door.rotation.y = d.angle; // encadrement dans le plan de la façade
+    scene.add(door);
+    if (d.target) {
+      const label = makeLabel(entranceLabel(d.e), {
+        bg: `${cssColour(colour)}ee`,
+        fg: '#ffffff',
+        worldH: 1.4,
+      });
+      label.position.set(d.x, 3.4, d.z);
+      scene.add(label);
+    }
+  }
+
+  // --- Marqueur de l'acces vise ---
+  // On le pose sur la meilleure entree cartographiee du batiment vise ; a
+  // defaut, sur le point Access'libre (utile quand aucune entree n'est connue,
+  // ou quand le point n'est dans aucune empreinte de batiment).
+  const bestDoor = doors
+    .filter((d) => d.target)
+    .sort(
+      (a, b) =>
+        entranceScore(b.e) - entranceScore(a.e) ||
+        Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z)
+    )[0];
+  addEntranceMarker(scene, hasTargetBuilding, bestDoor ? [bestDoor.x, bestDoor.z] : undefined);
 
   // --- Chaussees (routes) et cheminements pietons ---
   // Routes = ruban asphalte plat ; trottoirs = dalle claire surelevee ;

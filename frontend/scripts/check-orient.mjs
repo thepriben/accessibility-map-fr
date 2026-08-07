@@ -13,7 +13,16 @@ const bundle = await build({
 const mod = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`
 );
-const { alignX, benchAngle, faceBearing, localSideZ, orientedBox, parkingStall } = mod;
+const {
+  alignX,
+  benchAngle,
+  closeRing,
+  faceBearing,
+  localSideZ,
+  nearestLineDir,
+  orientedBox,
+  parkingStall,
+} = mod;
 
 let failures = 0;
 const DEG = 180 / Math.PI;
@@ -122,6 +131,26 @@ console.log('\n— Place : deduite de la rue (stationnement longitudinal) —');
   const stall = parkingStall({ x: 0, z: 0, pmr: false, ring: null, host: null, roads });
   checkAxis('vehicule dans l’axe de la rue', bearing(...longAxis(stall.angle)), 90);
   check('place ordinaire', stall.short, 2.5, 1e-9);
+}
+
+console.log('\n— Entree : projection sur la façade —');
+// Batiment carre de 20 m de cote, deja retreci pour le rendu. Le nœud OSM de
+// l'entree est sur le contour d'origine, donc 0,6 m en dehors de la façade sud.
+{
+  const facade = [[-10, -10], [10, -10], [10, 10], [-10, 10]];
+  const closed = closeRing(facade);
+  check('anneau ferme', closed.length, facade.length + 1, 0);
+  const hit = nearestLineDir(0, 10.6, [closed]);
+  check('porte ramenee sur la façade (x)', hit.px, 0, 1e-9);
+  check('porte ramenee sur la façade (z)', hit.pz, 10, 1e-9);
+  check('ecart au mur = retrait applique', hit.dist, 0.6, 1e-9);
+  // L'encadrement s'etale selon +X local : il doit rester dans le plan du mur,
+  // ici la façade sud, donc un axe est-ouest.
+  checkAxis('encadrement dans le plan du mur', bearing(...longAxis(hit.angle)), 90);
+  // Une entree sur la façade est doit donner un encadrement nord-sud.
+  const east = nearestLineDir(10.6, 0, [closed]);
+  check('façade est reperee', east.px, 10, 1e-9);
+  checkAxis('encadrement suit la façade est', bearing(...longAxis(east.angle)), 0);
 }
 
 console.log(failures ? `\n${failures} verification(s) en echec` : '\nToutes les verifications passent');
