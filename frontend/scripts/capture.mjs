@@ -107,6 +107,10 @@ try {
   }
   await sleep(800); // laisse un dernier rendu s'afficher
 
+  // --delay <ms> : pour ce qui arrive apres la scene (fond de carte differe).
+  const delayArg = process.argv.indexOf('--delay');
+  if (delayArg > 0) await sleep(Number(process.argv[delayArg + 1] ?? 2000));
+
   // --wheel <n> : n crans de molette vers l'avant au centre, pour inspecter le
   // detail d'une scene qui s'affiche par defaut a l'echelle du quartier.
   const wheelArg = process.argv.indexOf('--wheel');

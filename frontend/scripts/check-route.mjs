@@ -10,7 +10,7 @@ const bundle = await build({
   write: false,
   platform: 'neutral',
 });
-const { findRoute } = await import(
+const { findRoute, frontDoorGuess } = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`
 );
 
@@ -102,6 +102,41 @@ function near(label, got, want, tol) {
   ];
   const r = findRoute(lines, [0, 0], [20, 0]);
   ok('sommets recales : troncons reconnectes', !r.direct, `longueur ${r.length.toFixed(1)} m`);
+}
+
+// --- Destination a defaut d'entree OSM : la façade donnant sur le trottoir ---
+{
+  // Batiment carre de 20 m, trottoir longeant sa façade sud (y = 14).
+  const ring = [
+    [0, 0],
+    [20, 0],
+    [20, 10],
+    [0, 10],
+  ];
+  const net = [{ points: [[-10, 14], [30, 14]] }];
+  const p = frontDoorGuess(ring, net, 1.2);
+  ok('façade sur rue : cote sud retenu', p[1] > 10, `point ${p.map((v) => v.toFixed(1))}`);
+  near('façade sur rue : decalage exterieur', p[1] - 10, 1.2, 0.3);
+  ok('façade sur rue : centree sur la façade', Math.abs(p[0] - 10) < 0.6, `x=${p[0].toFixed(1)}`);
+}
+
+// --- Le trottoir passe au nord : c'est cette façade-la qui doit gagner ---
+{
+  const ring = [
+    [0, 0],
+    [20, 0],
+    [20, 10],
+    [0, 10],
+  ];
+  const net = [{ points: [[-10, -6], [30, -6]] }];
+  const p = frontDoorGuess(ring, net, 1.2);
+  ok('façade opposee : cote nord retenu', p[1] < 0, `point ${p.map((v) => v.toFixed(1))}`);
+}
+
+// --- Empreinte ou reseau absents ---
+{
+  ok('empreinte degeneree : pas de point', frontDoorGuess([[0, 0], [1, 1]], [{ points: [[0, 5], [5, 5]] }]) === null);
+  ok('reseau absent : pas de point', frontDoorGuess([[0, 0], [4, 0], [4, 4], [0, 4]], []) === null);
 }
 
 console.log(failures ? `\n${failures} echec(s)` : '\nTout est conforme');

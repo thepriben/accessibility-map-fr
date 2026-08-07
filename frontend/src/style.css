@@ -275,6 +275,10 @@ a { color: var(--focus); }
   background: var(--accent); color: var(--accent-ink); border: 0; padding: 8px 14px;
   border-radius: 8px; cursor: pointer; font-weight: 600; white-space: nowrap;
 }
+/* Credits des tuiles posees au sol : discrets, mais la licence les impose.
+   Dans le bandeau plutot qu'en bas de vue, ou la fiche du lieu les masquait. */
+.scene3d-credits { color: #8d9db5; font-size: 0.68rem; }
+.scene3d-credits a { color: #b7c6db; }
 
 /* Legende de la scene 3D (bas-gauche) */
 .scene3d-legend {

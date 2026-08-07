@@ -34,6 +34,65 @@ export interface RouteResult {
   direct: boolean;
 }
 
+/**
+ * Point de l'empreinte d'un bâtiment le plus proche du réseau piéton, décalé de
+ * `out` mètres vers l'extérieur.
+ *
+ * Sert de destination quand OpenStreetMap ne cartographie aucune entrée : viser
+ * le point Access'libre ferait aboutir le trajet au milieu du bâtiment, alors
+ * que la façade donnant sur le cheminement est presque toujours celle où se
+ * trouve la porte.
+ */
+export function frontDoorGuess(ring: P2[], lines: RouteLine[], out = 1.2): P2 | null {
+  if (ring.length < 3) return null;
+  // On mesure la distance aux segments, pas à leurs extrémités : le long d'une
+  // rue droite, les seuls sommets peuvent se trouver à cent mètres de là.
+  const segs: [P2, P2][] = [];
+  for (const l of lines)
+    for (let i = 0; i < l.points.length - 1; i += 1) segs.push([l.points[i], l.points[i + 1]]);
+  if (!segs.length) return null;
+
+  let cx = 0;
+  let cy = 0;
+  for (const [x, y] of ring) {
+    cx += x;
+    cy += y;
+  }
+  cx /= ring.length;
+  cy /= ring.length;
+
+  // On choisit une façade entière, pas un point : viser le sommet le plus
+  // proche ferait aboutir le trajet dans un angle du bâtiment.
+  let best: P2 | null = null;
+  let bestD = Infinity;
+  for (let i = 0; i < ring.length; i += 1) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    const mid: P2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    let d = Infinity;
+    for (const [p, q] of segs) d = Math.min(d, distToSegment(mid, p, q));
+    if (d < bestD) {
+      bestD = d;
+      // Décalage perpendiculaire à la façade, du côté opposé au centre.
+      const nx = -(b[1] - a[1]);
+      const ny = b[0] - a[0];
+      const len = Math.hypot(nx, ny) || 1;
+      const s = (mid[0] - cx) * nx + (mid[1] - cy) * ny >= 0 ? 1 : -1;
+      best = [mid[0] + (s * nx * out) / len, mid[1] + (s * ny * out) / len];
+    }
+  }
+  return best;
+}
+
+/** Distance d'un point au segment [a, b]. */
+function distToSegment(p: P2, a: P2, b: P2): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy;
+  const t = len2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2)) : 0;
+  return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
+}
+
 /** Taille de la grille de recalage des sommets (m). */
 const SNAP = 0.5;
 

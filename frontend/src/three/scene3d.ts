@@ -9,7 +9,8 @@ import type {
   OsmPath,
 } from '../data/overpass';
 import { attachHover, tagInfo, type HoverHandle, type SceneInfo } from './hover';
-import { findRoute, type RouteLine } from './route';
+import { findRoute, frontDoorGuess, type RouteLine } from './route';
+import { basemapGround } from './basemap';
 import {
   alignX,
   benchAngle,
@@ -144,6 +145,13 @@ interface Ctx {
 }
 
 let ctx: Ctx | null = null;
+
+/**
+ * Identifie la scene courante. Les ressources chargees en differe (le fond de
+ * carte) verifient qu'elles appartiennent encore a la scene affichee avant de
+ * s'y ajouter : passer d'un lieu a l'autre est frequent.
+ */
+let sceneToken: object | null = null;
 
 const M_PER_DEG_LAT = 111320;
 
@@ -299,7 +307,32 @@ function pickTargetBuilding(
     const ring = localRing(buildings[i]);
     if (ring && ringContains(ring, 0, 0)) return i;
   }
-  return -1;
+
+  // 5. Bâtiment mitoyen du point. Les coordonnées Access'libre sont souvent
+  // géocodées à l'adresse, c'est-à-dire sur la voie devant l'immeuble : le
+  // point ne tombe alors dans aucune empreinte. Au-delà de quelques mètres on
+  // renonce, plutôt que de désigner le bâtiment d'en face.
+  let near = -1;
+  let nearD = 12;
+  for (let i = 0; i < buildings.length; i += 1) {
+    const ring = localRing(buildings[i]);
+    if (!ring) continue;
+    let d = Infinity;
+    for (let k = 0; k < ring.length; k += 1) {
+      const a = ring[k];
+      const b = ring[(k + 1) % ring.length];
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const len2 = dx * dx + dz * dz;
+      const t = len2 ? Math.max(0, Math.min(1, (-a[0] * dx + -a[1] * dz) / len2)) : 0;
+      d = Math.min(d, Math.hypot(a[0] + t * dx, a[1] + t * dz));
+    }
+    if (d < nearD) {
+      nearD = d;
+      near = i;
+    }
+  }
+  return near;
 }
 
 const COLOR_TARGET = 0xef8b4e; // lieu cible : orange chaud (conserve)
@@ -1386,17 +1419,16 @@ function makeFountain(x: number, z: number): THREE.Group {
   return g;
 }
 
-/** Hauteur de montée d'un escalier telle qu'elle est representee dans la scene. */
-const STEPS_MAX_RISE = 1.1;
-
 /**
- * Escalier : volée de marches, main courante et rampe d'accès quand OSM les
- * signale.
+ * Escalier, représenté à plat.
  *
- * Le voisinage est rendu sur un sol plat, sans modèle de terrain : une volée à
- * sa hauteur réelle finirait suspendue en l'air, déconnectée du cheminement
- * qu'elle rejoint. On comprime donc la montée, l'information utile ici étant
- * « il y a N marches, avec ou sans rampe », pas leur altitude exacte.
+ * La scène est rendue sur un sol horizontal, sans modèle de terrain : une volée
+ * en relief finissait suspendue au-dessus du cheminement qu'elle rejoint, et
+ * ses marches, ses garde-corps et sa rampe encombraient la vue pour dire une
+ * chose simple. On la traite donc comme un marquage au sol — l'emprise dans la
+ * teinte des marches, un nez de marche par degré, la rampe en bleu PMR le cas
+ * échéant. Ce qu'il faut savoir avant de venir, c'est qu'il y a des marches
+ * ici, combien, et s'il existe un contournement.
  */
 function makeSteps(
   path: OsmPath,
@@ -1406,99 +1438,54 @@ function makeSteps(
   const total = pathLength(points);
   if (points.length < 2 || total < 0.6) return null;
 
-  // `incline=down` décrit la pente dans le sens des nœuds OSM : on parcourt
-  // alors la volée à l'envers pour que la montée aille dans le bon sens.
-  const line = path.incline === 'down' ? [...points].reverse() : points;
-  const n = Math.max(2, Math.min(path.stepCount ?? Math.round(total / 0.3), 24));
-  const riseTotal = Math.min(n * 0.17, STEPS_MAX_RISE);
-  const rise = riseTotal / n;
+  const n = Math.max(2, Math.min(path.stepCount ?? Math.round(total / 0.3), 40));
   const going = total / n;
   const width = Math.min(Math.max(path.width ?? 1.8, 1), 6);
 
   const g = new THREE.Group();
-  const unit = new THREE.BoxGeometry(going * 0.98, 1, width);
-  for (let k = 0; k < n; k += 1) {
-    const at = pointAlong(line, (k + 0.5) * going);
+
+  // Emprise de la volée : une dalle fine, à peine plus épaisse qu'un trottoir,
+  // dans la teinte réservée aux marches.
+  const base = ribbonSlab(points, width, 0.08);
+  if (base) {
+    const slab = new THREE.Mesh(base, mat);
+    slab.castShadow = true;
+    slab.receiveShadow = true;
+    g.add(slab);
+  }
+
+  // Nez de marche : un trait clair en travers, un par degré. C'est le motif qui
+  // fait lire « escalier » d'un coup d'oeil, même vu de haut.
+  const nosingMat = new THREE.MeshStandardMaterial({ color: 0xf6efe6, roughness: 0.8 });
+  const nosing = new THREE.BoxGeometry(0.09, 0.02, width * 0.88);
+  for (let k = 1; k < n; k += 1) {
+    const at = pointAlong(points, k * going);
     if (!at) continue;
-    const y = rise * (k + 1);
-    const tread = new THREE.Mesh(unit, mat);
-    tread.scale.y = y;
-    tread.position.set(at.x, y / 2, at.z);
-    tread.rotation.y = alignX(at.ux, at.uz);
-    tread.castShadow = true;
-    tread.receiveShadow = true;
-    g.add(tread);
+    const bar = new THREE.Mesh(nosing, nosingMat);
+    bar.position.set(at.x, 0.09, at.z);
+    bar.rotation.y = alignX(at.ux, at.uz);
+    g.add(bar);
   }
 
-  // Palier haut : la volée se termine sur un replat plutôt que sur une arête
-  // dans le vide.
-  const top = pointAlong(line, total);
-  if (top) {
-    const landing = new THREE.Mesh(new THREE.BoxGeometry(0.7, riseTotal, width), mat);
-    landing.position.set(top.x + top.ux * 0.34, riseTotal / 2, top.z + top.uz * 0.34);
-    landing.rotation.y = alignX(top.ux, top.uz);
-    landing.castShadow = true;
-    landing.receiveShadow = true;
-    g.add(landing);
-  }
-
-  // Main courante : elle change tout pour une personne à mobilité réduite qui
-  // emprunte quand même l'escalier.
-  if (path.handrail) {
-    const railMat = new THREE.MeshStandardMaterial({
-      color: 0x8a8f98,
-      roughness: 0.35,
-      metalness: 0.65,
-    });
-    for (const side of [-1, 1]) {
-      const pts: THREE.Vector3[] = [];
-      for (let k = 0; k <= n; k += 1) {
-        const at = pointAlong(line, Math.min(k * going, total));
-        if (!at) continue;
-        // Décalage perpendiculaire au sens de la montée.
-        pts.push(
-          new THREE.Vector3(
-            at.x + -at.uz * side * (width / 2 - 0.08),
-            rise * k + 0.95,
-            at.z + at.ux * side * (width / 2 - 0.08)
-          )
-        );
-      }
-      if (pts.length < 2) continue;
-      const curve = new THREE.CatmullRomCurve3(pts);
-      const rail = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, Math.max(n * 2, 8), 0.035, 6, false),
-        railMat
-      );
-      rail.castShadow = true;
-      g.add(rail);
-    }
-  }
-
-  // Rampe praticable en fauteuil : c'est ce qui fait la difference entre un
-  // escalier infranchissable et un passage possible. On la marque en bleu PMR.
+  // Rampe praticable en fauteuil : la différence entre un passage impossible et
+  // un contournement. Bande bleu PMR le long de la volée.
   if (path.rampWheelchair) {
-    const rampMat = new THREE.MeshStandardMaterial({
-      color: 0x2f6fb0,
-      roughness: 0.8,
-      emissive: 0x2f6fb0,
-      emissiveIntensity: 0.15,
-    });
+    const rampMat = new THREE.MeshStandardMaterial({ color: 0x2f6fb0, roughness: 0.85 });
     const rampW = 1.1;
-    const offset = width / 2 + rampW / 2 + 0.1;
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(going * 1.02, 1, rampW), rampMat);
-    for (let k = 0; k < n; k += 1) {
-      const at = pointAlong(line, (k + 0.5) * going);
-      if (!at) continue;
-      // Plan incliné approché par tranches : évite une géométrie sur mesure.
-      const y = rise * (k + 0.5);
-      const seg = slab.clone();
-      seg.scale.y = y;
-      seg.position.set(at.x + -at.uz * offset, y / 2, at.z + at.ux * offset);
-      seg.rotation.y = alignX(at.ux, at.uz);
-      seg.castShadow = true;
-      seg.receiveShadow = true;
-      g.add(seg);
+    const offset = width / 2 + rampW / 2 + 0.12;
+    const side = points.map(([x, z], i) => {
+      const p = points[Math.max(i - 1, 0)];
+      const q = points[Math.min(i + 1, points.length - 1)];
+      const dx = q[0] - p[0];
+      const dz = q[1] - p[1];
+      const len = Math.hypot(dx, dz) || 1;
+      return [x - (dz / len) * offset, z + (dx / len) * offset] as [number, number];
+    });
+    const geom = ribbonSlab(side, rampW, 0.07);
+    if (geom) {
+      const ramp = new THREE.Mesh(geom, rampMat);
+      ramp.receiveShadow = true;
+      g.add(ramp);
     }
   }
 
@@ -2190,31 +2177,78 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     });
   }
 
-  // --- Trajet : de la place PMR la plus proche à l'arrêt de bus le plus proche
-  // Les deux arrivées les plus courantes pour qui prépare une visite. Le tracé
-  // suit les cheminements cartographiés ; à défaut il relie les deux points en
-  // ligne droite, ce que l'infobulle annonce sans détour.
+  // --- Trajets d'accès : jusqu'à l'entrée du lieu ---
+  // Ce qu'on vient vérifier avant de se déplacer, c'est comment on atteint la
+  // porte. Deux tracés y mènent, depuis les deux arrivées les plus courantes :
+  // la place PMR la plus proche et l'arrêt de bus le plus proche.
   const tickers: ((dt: number) => void)[] = [];
-  if (nearestPmr && nearestStop) {
-    const route = findRoute(walkNet, [nearestPmr.x, nearestPmr.z], [nearestStop.x, nearestStop.z]);
+  // Destination, par ordre de fiabilité : l'entrée cartographiée du bâtiment
+  // visé, sinon la façade de ce bâtiment donnant sur le cheminement, sinon le
+  // point Access'libre — qui tombe souvent au milieu du bâtiment.
+  const targetRing = targetIdx >= 0 ? facades[targetIdx] : null;
+  const destination: [number, number] =
+    (bestDoor
+      ? ([
+          bestDoor.x + bestDoor.outward * Math.sin(bestDoor.angle) * 1.3,
+          bestDoor.z + bestDoor.outward * Math.cos(bestDoor.angle) * 1.3,
+        ] as [number, number])
+      : targetRing
+        ? frontDoorGuess(targetRing, walkNet, 1.3)
+        : null) ?? [0, 0];
+
+  const arrivals: { from: [number, number]; title: string; origin: string }[] = [];
+  if (nearestPmr)
+    arrivals.push({
+      from: [nearestPmr.x, nearestPmr.z],
+      title: 'Trajet depuis la place PMR',
+      origin: 'Départ : place de stationnement PMR la plus proche',
+    });
+  if (nearestStop)
+    arrivals.push({
+      from: [nearestStop.x, nearestStop.z],
+      title: 'Trajet depuis l’arrêt de bus',
+      origin: `Départ : ${nearestStop.name ? `arrêt ${nearestStop.name}` : 'arrêt de bus le plus proche'}`,
+    });
+
+  for (const a of arrivals) {
+    const route = findRoute(walkNet, a.from, destination);
     const drawn = makeRoute(route.points, COLOR_ROUTE);
-    if (drawn) {
-      addInfo(drawn.group, {
-        title: 'Trajet à pied',
-        colour: COLOR_ROUTE,
-        details: [
-          `Place PMR → ${nearestStop.name ? `arrêt ${nearestStop.name}` : 'arrêt de bus'}`,
-          `Environ ${Math.round(route.length)} m`,
-          route.direct
-            ? 'Liaison directe : aucun cheminement cartographié entre les deux'
-            : 'Suit les trottoirs et cheminements d’OpenStreetMap',
-        ],
-      });
-      tickers.push(drawn.tick);
-    }
+    if (!drawn) continue;
+    addInfo(drawn.group, {
+      title: a.title,
+      colour: COLOR_ROUTE,
+      details: [
+        a.origin,
+        bestDoor ? 'Arrivée : entrée cartographiée du lieu' : 'Arrivée : façade du lieu sur rue',
+        `Environ ${Math.round(route.length)} m à pied`,
+        route.direct
+          ? 'Liaison directe : aucun cheminement cartographié sur ce parcours'
+          : 'Suit les trottoirs et cheminements d’OpenStreetMap',
+      ],
+    });
+    tickers.push(drawn.tick);
   }
 
   const radius = Math.min(Math.max(maxR * 1.9, 40), 400);
+
+  // --- Fond de carte au sol, autour du voisinage modelise ---
+  // Chargement differe : la 3D s'affiche sans attendre les tuiles, la carte
+  // vient s'y poser ensuite. Le repere `token` evite qu'un fond arrive dans une
+  // scene deja remplacee par une autre.
+  const token = {};
+  sceneToken = token;
+  void basemapGround(payload.place.lng, payload.place.lat, {
+    halfSize: Math.min(Math.max(radius * 1.5, 250), 700),
+  })
+    .then((map) => {
+      if (map && sceneToken === token) scene.add(map);
+      else if (!map) console.warn('fond de carte 3D : aucune tuile obtenue');
+    })
+    .catch((err) => {
+      // Sans tuiles, la scene garde son sol uni : rien de bloquant, mais le
+      // silence complet rendrait la panne invisible.
+      console.warn('fond de carte 3D indisponible', err);
+    });
 
   // --- Lumieres : ambiance hemispherique douce + soleil avec ombres portees ---
   scene.add(new THREE.HemisphereLight(th.sky, th.hemiGround, th.hemiI));
@@ -2241,7 +2275,15 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
 
   scene.fog = new THREE.Fog(th.bg, radius * 1.4, radius * 3.4);
 
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  // Tampon de profondeur logarithmique : la scène empile des surfaces séparées
+  // de quelques centimètres (sol, fond de carte, chaussée, trottoir, marquages)
+  // et se regarde d'aussi loin que quelques centaines de mètres. En profondeur
+  // linéaire, ces plans se disputent l'affichage dès qu'on prend du recul.
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    logarithmicDepthBuffer: true,
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(w, h, false);
   renderer.shadowMap.enabled = true;
@@ -2616,6 +2658,8 @@ export function updateTheme(dark: boolean): void {
 /** Detruit la scene et libere les ressources GPU. */
 export function stopScene3D(): void {
   if (!ctx) return;
+  // Un fond de carte encore en vol ne doit pas se raccrocher a une scene morte.
+  sceneToken = null;
   cancelAnimationFrame(ctx.raf);
   ctx.ro?.disconnect();
   ctx.hover?.dispose();

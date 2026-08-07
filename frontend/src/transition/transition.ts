@@ -3,6 +3,7 @@ import { getTheme } from '../theme';
 import type { Place, StreetPhoto } from '../types';
 import { hideFlatFallback, isNeighborhoodEmpty, showFlatFallback } from './flatFallback';
 import type { LegendKind } from '../three/scene3d';
+import { MAP_ATTRIBUTION } from '../config';
 
 export interface ScenePayload {
   place: { nom: string; lng: number; lat: number; activite?: string; a11y?: string };
@@ -134,6 +135,7 @@ function sceneUiHtml(payload: ScenePayload): string {
             ? '<span class="scene3d-sub">OpenStreetMap ne décrit pas encore ce voisinage (ni bâtiment, ni cheminement) : voici la carte.</span>'
             : ''
         }
+        <span class="scene3d-credits">${MAP_ATTRIBUTION}</span>
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
     </div>
@@ -190,9 +192,8 @@ function legendHtml(payload: ScenePayload): string {
     {
       title: 'Sur place',
       entries: [
-        nb.busStops?.length &&
-          nb.parking?.some((p) => p.pmr) &&
-          (['route', 'Trajet place PMR → arrêt de bus'] as const),
+        (nb.busStops?.length || nb.parking?.some((p) => p.pmr)) &&
+          (['route', 'Trajet à pied vers l’entrée'] as const),
         nb.busStops?.length && (['bus_stop', 'Arrêt de bus'] as const),
         nb.busRoutes?.length && (['bus_route', 'Ligne de bus'] as const),
         nb.parking?.some((p) => p.pmr) && (['parking-pmr', 'Place PMR'] as const),
