@@ -426,6 +426,9 @@ a { color: var(--focus); }
 }
 .ppop-3d { background: var(--accent); color: var(--accent-ink); }
 .ppop-details { background: var(--soft); color: var(--ink); }
+/* Renvoi vers la source : un lien, pas un bouton, pour ne pas concurrencer les
+   deux actions qui restent au coeur du popup. */
+.ppop-source { margin: 8px 0 0; font-size: 0.8rem; }
 
 /* Popup MapLibre : suit le thème */
 .maplibregl-popup-content {

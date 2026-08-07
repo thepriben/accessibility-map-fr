@@ -156,6 +156,41 @@ try {
   await guard(() => until('!!document.querySelector("#btn-3d, .ppop-3d")', 'bouton 3D'));
   await shot('2-fiche');
 
+  // Popup carto : la fiche ouverte depuis la recherche ne passe pas par lui, et
+  // c'est pourtant lui qui porte le renvoi vers la source Acceslibre. La
+  // recherche a centre la carte sur le lieu : son marqueur est donc au milieu,
+  // l'icone legerement au-dessus du point d'ancrage.
+  await evaluate(`document.querySelector('#panel-close')?.click()`);
+  await sleep(600);
+  const box = await evaluate(`(() => {
+    const r = document.getElementById('map').getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  let popupLink = null;
+  for (const [dx, dy] of [
+    [0, 0], [0, -8], [0, -16], [0, -24], [0, -32],
+    [-8, -12], [8, -12], [-8, -24], [8, -24], [0, 8],
+  ]) {
+    if (popupLink) break;
+    const at = { x: box.x + dx, y: box.y + dy, button: 'left', clickCount: 1 };
+    await call('Input.dispatchMouseEvent', { type: 'mousePressed', ...at });
+    await call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at });
+    await sleep(150);
+    popupLink = await evaluate(
+      `(() => { const a = document.querySelector('.ppop-source a'); return a ? a.href : null; })()`
+    );
+  }
+  console.log(`lien Acceslibre dans le popup: ${popupLink ?? 'ABSENT'}`);
+  await shot('2b-popup');
+
+  // Sans popup, la fiche a ete fermee : on la rouvre pour la suite du parcours.
+  if (!popupLink) {
+    await evaluate(`(() => {
+      const el = document.querySelector('#search-results li');
+      if (el) el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    })()`);
+    await guard(() => until('!!document.querySelector("#btn-3d, .ppop-3d")', 'bouton 3D'));
+  }
   await evaluate(`document.querySelector('#btn-3d, .ppop-3d').click()`);
   await guard(() =>
     until(

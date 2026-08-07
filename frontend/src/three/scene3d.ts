@@ -778,14 +778,35 @@ function makeDoorMarker(
 ): THREE.Group {
   const g = new THREE.Group();
 
-  // Entrée d'un autre bâtiment : un simple seuil au sol suffit à se repérer.
-  // Dresser une porte devant chaque façade du voisinage surchargeait la scène.
+  // Entrée d'un autre bâtiment : une porte réelle, mais sobre. Un seuil seul ne
+  // se lisait pas comme une entrée ; la version complète, avec halo et
+  // signalétique, réservée au lieu visé, saturerait le voisinage.
   if (!prominent) {
+    const w = 1.1;
+    const h = 1.95;
+    const jamb = 0.1;
+    const frameMat = new THREE.MeshStandardMaterial({ color: colour, roughness: 0.7 });
+    for (const s of [-1, 1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(jamb, h, 0.14), frameMat);
+      post.position.set((s * (w - jamb)) / 2, h / 2, 0);
+      post.castShadow = true;
+      g.add(post);
+    }
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(w, 0.12, 0.14), frameMat);
+    lintel.position.y = h - 0.06;
+    lintel.castShadow = true;
+    g.add(lintel);
+    const leaf = new THREE.Mesh(
+      new THREE.BoxGeometry(w - 2 * jamb, h - 0.12, 0.06),
+      new THREE.MeshStandardMaterial({ color: 0x39404a, roughness: 0.6 })
+    );
+    leaf.position.set(0, (h - 0.12) / 2, -outward * 0.05);
+    g.add(leaf);
     const sill = new THREE.Mesh(
-      new THREE.BoxGeometry(1.1, 0.07, 0.55),
+      new THREE.BoxGeometry(w, 0.06, 0.42),
       new THREE.MeshStandardMaterial({ color: colour, roughness: 0.85 })
     );
-    sill.position.set(0, 0.035, outward * 0.3);
+    sill.position.set(0, 0.03, outward * 0.24);
     sill.receiveShadow = true;
     g.add(sill);
     return g;
@@ -1606,9 +1627,11 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   }
 
   // --- Entrees OSM ---
-  // Hierarchie volontaire : toutes les entrees du batiment vise (c'est
-  // l'information qu'on vient chercher), mais seulement les entrees principales
-  // des autres batiments, en sourdine, pour se reperer sans surcharger.
+  // Toute entree cartographiee est montree, sur le batiment vise comme sur ses
+  // voisins : savoir par ou l'on entre dans le cafe d'a cote ou la pharmacie
+  // fait partie de ce qu'on vient verifier. La hierarchie tient a la forme, pas
+  // a la selection : porte complete, halo et signaletique pour le lieu vise,
+  // porte sobre ailleurs.
   const doors: {
     e: OsmEntrance;
     x: number;
@@ -1634,7 +1657,6 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     }
     if (!best || best.dist > 2.5) continue;
     const isTarget = bestIdx === targetIdx;
-    if (!isTarget && e.kind !== 'main') continue;
     // Extérieur = à l'opposé du centre du bâtiment, pour poser pictogramme et
     // marches du bon côté de la porte.
     const ring = facades[bestIdx]!;
@@ -1651,7 +1673,9 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   }
 
   for (const d of doors) {
-    const colour = d.target ? entranceColour(d.e.wheelchair) : 0x8891a0;
+    // Le code couleur vaut partout : reperer une entree praticable chez le
+    // voisin renseigne sur le quartier autant que sur le lieu lui-meme.
+    const colour = entranceColour(d.e.wheelchair);
     const door = makeDoorMarker(d.e, colour, d.target, d.outward);
     door.position.set(d.x, 0, d.z);
     door.rotation.y = d.angle; // encadrement dans le plan de la façade

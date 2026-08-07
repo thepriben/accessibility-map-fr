@@ -55,7 +55,14 @@ export function showPlacePopup(
     <div class="ppop-actions">
       <button type="button" class="ppop-btn ppop-3d">Voisinage en 3D</button>
       <button type="button" class="ppop-btn ppop-details">Fiche détaillée</button>
-    </div>`;
+    </div>
+    ${
+      p.web_url
+        ? `<p class="ppop-source"><a href="${esc(
+            p.web_url
+          )}" target="_blank" rel="noopener">Voir sur Acceslibre &nearr;</a></p>`
+        : ''
+    }`;
 
   el.querySelector('.ppop-3d')?.addEventListener('click', () => handlers.onEnter3D(place));
   el.querySelector('.ppop-details')?.addEventListener('click', () => handlers.onDetails(place));
