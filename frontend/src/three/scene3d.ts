@@ -9,7 +9,15 @@ import type {
   OsmPath,
 } from '../data/overpass';
 import { attachHover, tagInfo, type HoverHandle, type SceneInfo } from './hover';
-import { findRoute, frontDoorGuess, type RouteLine } from './route';
+import {
+  findRoute,
+  frontDoorGuess,
+  measureWalk,
+  sampleWalk,
+  type RouteLine,
+  type WalkPath,
+  type WalkPose,
+} from './route';
 import { basemapGround } from './basemap';
 import {
   alignX,
@@ -133,6 +141,22 @@ export interface Scene3DPayload {
   theme?: string;
 }
 
+/**
+ * Simulation en cours : la camera quitte la vue d'ensemble pour parcourir un
+ * trajet a hauteur d'yeux d'une personne assise en fauteuil.
+ */
+interface WalkState {
+  option: WalkOption;
+  path: WalkPath;
+  /** Abscisse curviligne atteinte, en metres depuis le depart. */
+  d: number;
+  playing: boolean;
+  mini: HTMLCanvasElement | null;
+  onFrame: (f: WalkFrame) => void;
+  /** Vue d'ensemble a restituer en sortie de simulation. */
+  saved: { pos: THREE.Vector3; target: THREE.Vector3 };
+}
+
 interface Ctx {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
@@ -142,6 +166,7 @@ interface Ctx {
   raf: number;
   ro: ResizeObserver | null;
   hover: HoverHandle | null;
+  walk: WalkState | null;
 }
 
 let ctx: Ctx | null = null;
@@ -152,6 +177,34 @@ let ctx: Ctx | null = null;
  * s'y ajouter : passer d'un lieu a l'autre est frequent.
  */
 let sceneToken: object | null = null;
+
+/** Trajets simulables de la scene courante, dans l'ordre d'apparition. */
+let walkable: { option: WalkOption; path: WalkPath }[] = [];
+
+/**
+ * Materiaux des trajets traces au sol. Vus de dessus ils guident l'oeil ; a
+ * hauteur d'yeux, le tiret le plus proche occupe la moitie de l'ecran et cache
+ * precisement le sol qu'on vient inspecter. On les attenue le temps du parcours.
+ */
+let routeMats: THREE.Material[] = [];
+
+/**
+ * Fond de carte assemble pour la scene courante, conserve pour le medaillon de
+ * situation : redessiner une image deja en memoire coute moins qu'un second
+ * rendu 3D a chaque trame.
+ */
+let miniBase: {
+  image: HTMLCanvasElement;
+  west: number;
+  east: number;
+  north: number;
+  south: number;
+} | null = null;
+
+/** Allure retenue : celle d'un fauteuil manuel sur un trottoir. */
+const WALK_SPEED = 0.8;
+/** Hauteur des yeux d'une personne assise en fauteuil. */
+const EYE_HEIGHT = 1.2;
 
 const M_PER_DEG_LAT = 111320;
 
@@ -547,6 +600,8 @@ function makeRoute(
   group.add(mesh);
   group.add(routeEnd(points[0][0], points[0][1], colour));
   group.add(routeEnd(points[points.length - 1][0], points[points.length - 1][1], colour));
+
+  routeMats.push(mesh.material as THREE.Material);
 
   return {
     group,
@@ -2220,20 +2275,32 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
         ? frontDoorGuess(targetRing, walkNet, 1.3)
         : null) ?? [0, 0];
 
-  const arrivals: { from: [number, number]; title: string; origin: string }[] = [];
+  const arrivals: {
+    id: string;
+    from: [number, number];
+    title: string;
+    origin: string;
+    short: string;
+  }[] = [];
   if (nearestPmr)
     arrivals.push({
+      id: 'pmr',
       from: [nearestPmr.x, nearestPmr.z],
       title: 'Trajet depuis la place PMR',
       origin: 'Départ : place de stationnement PMR la plus proche',
+      short: 'Place PMR → entrée',
     });
   if (nearestStop)
     arrivals.push({
+      id: 'bus',
       from: [nearestStop.x, nearestStop.z],
       title: 'Trajet depuis l’arrêt de bus',
       origin: `Départ : ${nearestStop.name ? `arrêt ${nearestStop.name}` : 'arrêt de bus le plus proche'}`,
+      short: `${nearestStop.name ? `Arrêt ${nearestStop.name}` : 'Arrêt de bus'} → entrée`,
     });
 
+  walkable = [];
+  routeMats = [];
   for (const a of arrivals) {
     const route = findRoute(walkNet, a.from, destination);
     const drawn = makeRoute(route.points, COLOR_ROUTE);
@@ -2251,6 +2318,19 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       ],
     });
     tickers.push(drawn.tick);
+
+    const path = measureWalk(route.points);
+    if (path.total > 3) {
+      walkable.push({
+        option: {
+          id: a.id,
+          label: a.short,
+          length: Math.round(route.length),
+          direct: route.direct,
+        },
+        path,
+      });
+    }
   }
 
   const radius = Math.min(Math.max(maxR * 1.9, 40), 400);
@@ -2261,12 +2341,15 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // scene deja remplacee par une autre.
   const token = {};
   sceneToken = token;
+  miniBase = null;
   void basemapGround(payload.place.lng, payload.place.lat, {
     halfSize: Math.min(Math.max(radius * 1.5, 250), 700),
   })
     .then((map) => {
-      if (map && sceneToken === token) scene.add(map);
-      else if (!map) console.warn('fond de carte 3D : aucune tuile obtenue');
+      if (map && sceneToken === token) {
+        scene.add(map);
+        miniBase = map.userData.extent as typeof miniBase;
+      } else if (!map) console.warn('fond de carte 3D : aucune tuile obtenue');
     })
     .catch((err) => {
       // Sans tuiles, la scene garde son sol uni : rien de bloquant, mais le
@@ -2339,6 +2422,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     raf: 0,
     ro: null,
     hover: null,
+    walk: null,
   };
 
   // Survol : l'information vient a la demande, sous le curseur, au lieu
@@ -2363,12 +2447,207 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     c.raf = requestAnimationFrame(loop);
     const dt = Math.min(clock.getDelta(), 0.1);
     for (const tick of tickers) tick(dt);
-    controls.update();
+    if (c.walk) advanceWalk(c, c.walk, dt);
+    else controls.update();
     renderer.render(scene, camera);
   };
   loop();
 
   ctx = c;
+}
+
+/** Trajet proposé à la simulation, tel que l'interface le présente. */
+export interface WalkOption {
+  id: string;
+  label: string;
+  /** Longueur arrondie, en mètres. */
+  length: number;
+  /** Vrai quand aucun cheminement n'est cartographié : liaison à vol d'oiseau. */
+  direct: boolean;
+}
+
+/** État transmis à l'interface à chaque trame de simulation. */
+export interface WalkFrame {
+  /** Avancement de 0 à 1. */
+  progress: number;
+  /** Distance restant à parcourir, en mètres. */
+  remaining: number;
+  playing: boolean;
+  done: boolean;
+}
+
+/** Trajets que la scène courante sait faire parcourir. */
+export function walkOptions(): WalkOption[] {
+  return walkable.map((w) => w.option);
+}
+
+/**
+ * Lance la simulation d'un trajet. La caméra descend à hauteur d'yeux d'une
+ * personne assise et avance seule : les contrôles de navigation sont suspendus
+ * le temps du parcours, sans quoi un glissement de souris ferait dériver la vue
+ * pendant que la position, elle, continuerait d'avancer.
+ */
+export function startWalk(
+  id: string,
+  mini: HTMLCanvasElement | null,
+  onFrame: (f: WalkFrame) => void
+): boolean {
+  const c = ctx;
+  const found = walkable.find((w) => w.option.id === id);
+  if (!c || !found) return false;
+  stopWalk();
+  c.walk = {
+    option: found.option,
+    path: found.path,
+    d: 0,
+    playing: true,
+    mini,
+    onFrame,
+    saved: { pos: c.camera.position.clone(), target: c.controls.target.clone() },
+  };
+  c.controls.enabled = false;
+  c.hover?.dispose();
+  c.hover = null;
+  for (const m of routeMats) m.opacity = 0.4;
+  return true;
+}
+
+/** Suspend ou reprend le parcours sans quitter la vue à hauteur de fauteuil. */
+export function setWalkPlaying(playing: boolean): void {
+  if (ctx?.walk) ctx.walk.playing = playing;
+}
+
+/** Quitte la simulation et rend la vue d'ensemble telle qu'elle était. */
+export function stopWalk(): void {
+  const c = ctx;
+  if (!c?.walk) return;
+  c.camera.position.copy(c.walk.saved.pos);
+  c.controls.target.copy(c.walk.saved.target);
+  c.controls.enabled = true;
+  c.controls.update();
+  for (const m of routeMats) m.opacity = 1;
+  c.walk = null;
+}
+
+/** Fait avancer la caméra le long du trajet et rafraîchit le médaillon. */
+function advanceWalk(c: Ctx, w: WalkState, dt: number): void {
+  if (w.playing) {
+    w.d = Math.min(w.d + dt * WALK_SPEED, w.path.total);
+    if (w.d >= w.path.total) w.playing = false;
+  }
+  const p = sampleWalk(w.path, w.d);
+  c.camera.position.set(p.x, EYE_HEIGHT, p.z);
+  // Le regard porte devant, très légèrement vers le sol : c'est là que se
+  // trouve ce qu'on vient vérifier (ressauts, bordures, largeur de passage).
+  c.camera.lookAt(p.x + p.hx * 12, EYE_HEIGHT - 1.1, p.z + p.hz * 12);
+  if (w.mini) paintWalkMini(w.mini, w.path, p);
+  w.onFrame({
+    progress: w.path.total ? w.d / w.path.total : 1,
+    remaining: Math.max(w.path.total - w.d, 0),
+    playing: w.playing,
+    done: w.d >= w.path.total,
+  });
+}
+
+/**
+ * Médaillon de situation : plan du quartier, tracé du trajet et position
+ * courante. Il répond à la seule question que la vue au ras du sol ne permet
+ * plus de trancher — où en suis-je sur le parcours.
+ */
+function paintWalkMini(cv: HTMLCanvasElement, path: WalkPath, pose: WalkPose): void {
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const cw = Math.round(cv.clientWidth * ratio);
+  const ch = Math.round(cv.clientHeight * ratio);
+  if (!cw || !ch) return;
+  if (cv.width !== cw || cv.height !== ch) {
+    cv.width = cw;
+    cv.height = ch;
+  }
+  const g = cv.getContext('2d');
+  if (!g) return;
+
+  // Fenêtre cadrée sur le trajet entier, avec une marge, puis ajustée au format
+  // du médaillon : le point mobile parcourt un plan fixe, plus lisible qu'une
+  // carte qui glisserait sous lui.
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let z0 = Infinity;
+  let z1 = -Infinity;
+  for (const [px, pz] of path.points) {
+    x0 = Math.min(x0, px);
+    x1 = Math.max(x1, px);
+    z0 = Math.min(z0, pz);
+    z1 = Math.max(z1, pz);
+  }
+  const margin = 18;
+  x0 -= margin;
+  x1 += margin;
+  z0 -= margin;
+  z1 += margin;
+  const aspect = cw / ch;
+  const spanX = x1 - x0;
+  const spanZ = z1 - z0;
+  if (spanX / spanZ < aspect) {
+    const want = spanZ * aspect;
+    const pad = (want - spanX) / 2;
+    x0 -= pad;
+    x1 += pad;
+  } else {
+    const want = spanX / aspect;
+    const pad = (want - spanZ) / 2;
+    z0 -= pad;
+    z1 += pad;
+  }
+  const sx = (x: number): number => ((x - x0) / (x1 - x0)) * cw;
+  const sz = (z: number): number => ((z - z0) / (z1 - z0)) * ch;
+
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = '#e8ecf1';
+  g.fillRect(0, 0, cw, ch);
+  if (miniBase) {
+    const b = miniBase;
+    const bw = b.image.width;
+    const bh = b.image.height;
+    const px = (x: number): number => ((x - b.west) / (b.east - b.west)) * bw;
+    const pz = (z: number): number => ((z - b.north) / (b.south - b.north)) * bh;
+    g.drawImage(b.image, px(x0), pz(z0), px(x1) - px(x0), pz(z1) - pz(z0), 0, 0, cw, ch);
+  }
+
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  g.strokeStyle = 'rgba(255,255,255,0.85)';
+  g.lineWidth = 5 * ratio;
+  g.beginPath();
+  path.points.forEach(([px, pz], i) => (i ? g.lineTo(sx(px), sz(pz)) : g.moveTo(sx(px), sz(pz))));
+  g.stroke();
+  g.strokeStyle = cssColour(COLOR_ROUTE);
+  g.lineWidth = 2.5 * ratio;
+  g.stroke();
+
+  const end = path.points[path.points.length - 1];
+  if (end) {
+    g.fillStyle = '#c2410c';
+    g.beginPath();
+    g.arc(sx(end[0]), sz(end[1]), 3.5 * ratio, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  // Position courante, avec le cap : un simple point ne dirait pas dans quel
+  // sens on regarde, or c'est ce qui relie le médaillon à la vue principale.
+  const hx = sx(pose.x);
+  const hz = sz(pose.z);
+  g.save();
+  g.translate(hx, hz);
+  g.rotate(Math.atan2(pose.hx, -pose.hz));
+  g.fillStyle = '#0f172a';
+  g.beginPath();
+  g.moveTo(0, -7 * ratio);
+  g.lineTo(5 * ratio, 5 * ratio);
+  g.lineTo(0, 2.5 * ratio);
+  g.lineTo(-5 * ratio, 5 * ratio);
+  g.closePath();
+  g.fill();
+  g.restore();
 }
 
 /**
@@ -2684,6 +2963,10 @@ export function stopScene3D(): void {
   if (!ctx) return;
   // Un fond de carte encore en vol ne doit pas se raccrocher a une scene morte.
   sceneToken = null;
+  ctx.walk = null;
+  walkable = [];
+  routeMats = [];
+  miniBase = null;
   cancelAnimationFrame(ctx.raf);
   ctx.ro?.disconnect();
   ctx.hover?.dispose();

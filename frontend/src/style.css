@@ -284,7 +284,8 @@ a { color: var(--focus); }
 .scene3d-legend {
   position: absolute;
   left: 12px; bottom: 12px;
-  max-width: 220px;
+  /* Assez large pour que « Entrée, accès non renseigné » tienne sur une ligne. */
+  max-width: 276px;
   background: rgba(12, 16, 22, 0.86);
   color: #eaf0f7;
   border-radius: 10px;
@@ -307,6 +308,71 @@ a { color: var(--focus); }
 .scene3d-legend li { display: flex; align-items: center; gap: 6px; }
 .lg-icon { width: 30px; height: 30px; flex: 0 0 auto; object-fit: contain; }
 .lg-sw { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+
+/* Simulation de parcours a hauteur de fauteuil. */
+.scene3d-sim {
+  position: absolute;
+  /* Au-dessus du bandeau d'etat, qui occupe deja le bas de l'ecran. */
+  left: 50%; bottom: 46px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+.sim-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(12, 16, 22, 0.88);
+  color: #eaf0f7;
+}
+.sim-controls select {
+  border: 0; border-radius: 8px; padding: 7px 9px;
+  background: #1e2733; color: #eaf0f7; font-size: 0.82rem; max-width: 260px;
+}
+.sim-btn {
+  border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+  font-weight: 600; font-size: 0.82rem;
+  background: var(--accent); color: var(--accent-ink);
+}
+.sim-quiet { background: #2b3644; color: #d7e0ec; }
+.sim-state { font-size: 0.78rem; color: #9fb1cf; min-width: 88px; }
+
+/* L'avertissement reste visible tout du long : la scene est une reconstitution,
+   pas un releve, et la confondre avec le terrain aurait des consequences. */
+.scene3d-sim-banner {
+  position: absolute;
+  /* Sous le bandeau du lieu, pour ne pas empieter sur le bouton de retour. */
+  left: 50%; top: 62px;
+  transform: translateX(-50%);
+  max-width: min(560px, 82vw);
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(180, 83, 9, 0.94);
+  color: #fff8ef;
+  font-size: 0.78rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Medaillon de situation : au ras du sol, on ne sait plus ou l'on en est. */
+.scene3d-mini {
+  position: absolute;
+  left: 12px; bottom: 12px;
+  margin: 0;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgba(12, 16, 22, 0.88);
+  color: #c6d2e2;
+  pointer-events: auto;
+}
+.scene3d-mini canvas {
+  display: block;
+  width: 240px; height: 180px;
+  border-radius: 8px;
+  background: #e8ecf1;
+}
+.scene3d-mini figcaption { margin-top: 4px; font-size: 0.7rem; text-align: center; }
 
 /* Infobulle de survol : l'information vient sous le curseur, a la demande,
    plutot que par des etiquettes permanentes dans la scene. */

@@ -156,5 +156,8 @@ export async function basemapGround(
   mesh.rotation.x = -Math.PI / 2;
   // Entre le sol uni (−0,05) et la chaussée (0,03).
   mesh.position.set((west + east) / 2, -0.01, (north + south) / 2);
+  // L'assemblage sert aussi de plan de situation pendant la simulation : le
+  // conserver évite de recomposer, ou de rendre la scène une seconde fois.
+  mesh.userData.extent = { image: canvas, west, east, north, south };
   return mesh;
 }

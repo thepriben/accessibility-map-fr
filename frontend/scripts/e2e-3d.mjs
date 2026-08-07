@@ -229,6 +229,31 @@ try {
   }
   console.log('infobulle:', tip ?? 'aucune');
 
+  // Simulation à hauteur de fauteuil : elle n'existe que si le voisinage offre
+  // un point de départ (place PMR ou arrêt de bus) relié à l'entrée.
+  const sim = await evaluate(
+    `(() => { const b = document.getElementById('scene3d-sim'); return b && !b.hidden ? document.getElementById('sim-route').options.length : 0; })()`
+  );
+  console.log(`trajets simulables: ${sim}`);
+  if (sim) {
+    await evaluate(`document.getElementById('sim-play').click()`);
+    await sleep(6000);
+    const running = await evaluate(`(() => ({
+      banniere: !document.getElementById('scene3d-sim-banner').hidden,
+      medaillon: !document.getElementById('scene3d-mini').hidden,
+      legende: !!document.querySelector('.scene3d-legend')?.hidden,
+      etat: document.getElementById('sim-state').textContent.trim(),
+    }))()`);
+    console.log(`simulation: ${JSON.stringify(running)}`);
+    await shot('5-simulation');
+    await evaluate(`document.getElementById('sim-stop').click()`);
+    await sleep(700);
+    const left = await evaluate(
+      `document.getElementById('scene3d-sim-banner').hidden && !document.querySelector('.scene3d-legend')?.hidden`
+    );
+    console.log(`sortie de simulation propre: ${left ? 'oui' : 'NON'}`);
+  }
+
   // L'infobulle doit disparaître hors des objets : une règle CSS trop faible
   // la laissait affichée en permanence, vide.
   if (tip) {

@@ -10,7 +10,7 @@ const bundle = await build({
   write: false,
   platform: 'neutral',
 });
-const { findRoute, frontDoorGuess } = await import(
+const { findRoute, frontDoorGuess, measureWalk, sampleWalk } = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`
 );
 
@@ -137,6 +137,55 @@ function near(label, got, want, tol) {
 {
   ok('empreinte degeneree : pas de point', frontDoorGuess([[0, 0], [1, 1]], [{ points: [[0, 5], [5, 5]] }]) === null);
   ok('reseau absent : pas de point', frontDoorGuess([[0, 0], [4, 0], [4, 4], [0, 4]], []) === null);
+}
+
+// --- Parcours du trajet : position et cap a une abscisse donnee ---
+{
+  // Ligne brisee : 10 m vers l'est, puis 10 m vers le sud.
+  const w = measureWalk([
+    [0, 0],
+    [10, 0],
+    [10, 10],
+  ]);
+  near('longueur cumulee', w.total, 20, 0.001);
+
+  const a = sampleWalk(w, 5, 1);
+  near('milieu du premier segment : x', a.x, 5, 0.001);
+  near('milieu du premier segment : z', a.z, 0, 0.001);
+  near('cap plein est', a.hx, 1, 0.001);
+
+  const b = sampleWalk(w, 15, 1);
+  near('second segment : z', b.z, 5, 0.001);
+  near('cap plein sud', b.hz, 1, 0.001);
+
+  // Le cap vise plus loin que le segment courant : au sommet, il est deja
+  // oriente vers la suite plutot que de pivoter d'un coup.
+  const turn = sampleWalk(w, 10, 4);
+  ok('cap lisse dans le virage', turn.hz > 0.9, `hz=${turn.hz.toFixed(2)}`);
+
+  // Aux extremites, aucun cap indefini.
+  const end = sampleWalk(w, 20, 4);
+  near('arrivee bornee : x', end.x, 10, 0.001);
+  ok('cap defini a l’arrivee', Math.hypot(end.hx, end.hz) > 0.99);
+  const before = sampleWalk(w, -5, 4);
+  near('depart borne : x', before.x, 0, 0.001);
+}
+
+// --- Sommets confondus et trajets degeneres ---
+{
+  const w = measureWalk([
+    [0, 0],
+    [0, 0],
+    [3, 0],
+  ]);
+  ok('sommets confondus ecartes', w.points.length === 2, `${w.points.length} sommets`);
+  near('longueur inchangee', w.total, 3, 0.001);
+
+  const single = measureWalk([[2, 2]]);
+  near('trajet reduit a un point : longueur', single.total, 0, 0.001);
+  const p = sampleWalk(single, 5, 4);
+  ok('point unique : position tenue', p.x === 2 && p.z === 2);
+  ok('point unique : cap defini', Math.hypot(p.hx, p.hz) > 0.99);
 }
 
 console.log(failures ? `\n${failures} echec(s)` : '\nTout est conforme');

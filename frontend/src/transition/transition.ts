@@ -85,6 +85,7 @@ export async function enterScene3D(payload: ScenePayload): Promise<boolean> {
     }
     mod.startScene3D(canvas, payload);
     paintLegendIcons(mod);
+    setupWalkUI(mod);
     dispatchSceneToggle(true);
     return true;
   } catch (err) {
@@ -139,7 +140,129 @@ function sceneUiHtml(payload: ScenePayload): string {
       </div>
       <button id="scene3d-close" type="button" class="scene3d-close">Revenir à la carte (Échap)</button>
     </div>
-    ${flat ? '' : legendHtml(payload)}`;
+    ${flat ? '' : legendHtml(payload)}
+    ${flat ? '' : walkHtml()}`;
+}
+
+/**
+ * Simulation de parcours. Le bandeau d'avertissement n'est pas décoratif : la
+ * scène est une reconstitution d'après OpenStreetMap, forcément incomplète, et
+ * quelqu'un ne doit pas préparer un déplacement en la prenant pour un relevé.
+ * Le bloc est vide tant que la scène n'a pas annoncé de trajet parcourable.
+ */
+function walkHtml(): string {
+  return `
+    <div id="scene3d-sim" class="scene3d-sim" hidden>
+      <div class="sim-controls">
+        <label class="sim-pick">
+          <span class="sr-only">Trajet à parcourir</span>
+          <select id="sim-route"></select>
+        </label>
+        <button id="sim-play" type="button" class="sim-btn">Parcourir le trajet</button>
+        <button id="sim-stop" type="button" class="sim-btn sim-quiet" hidden>Quitter la simulation</button>
+        <span id="sim-state" class="sim-state" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+    <div id="scene3d-sim-banner" class="scene3d-sim-banner" hidden>
+      <strong>Simulation</strong> — vue à hauteur d'yeux en fauteuil (1,20 m).
+      Reconstitution d'après OpenStreetMap, elle ne remplace pas un relevé sur place.
+    </div>
+    <figure id="scene3d-mini" class="scene3d-mini" hidden>
+      <canvas id="sim-mini" width="240" height="180"></canvas>
+      <figcaption>Position sur le trajet</figcaption>
+    </figure>`;
+}
+
+/**
+ * Branche les commandes de simulation sur la scène. Rien ne s'affiche si aucun
+ * trajet n'a pu être calculé : ni place PMR, ni arrêt de bus dans le voisinage.
+ */
+function setupWalkUI(mod: SceneMod): void {
+  const box = document.getElementById('scene3d-sim');
+  const pick = document.getElementById('sim-route') as HTMLSelectElement | null;
+  const play = document.getElementById('sim-play') as HTMLButtonElement | null;
+  const stop = document.getElementById('sim-stop') as HTMLButtonElement | null;
+  const state = document.getElementById('sim-state');
+  const banner = document.getElementById('scene3d-sim-banner');
+  const mini = document.getElementById('scene3d-mini');
+  const miniCv = document.getElementById('sim-mini') as HTMLCanvasElement | null;
+  const legend = document.querySelector('.scene3d-legend') as HTMLElement | null;
+  if (!box || !pick || !play || !stop || !state || !banner || !mini || !miniCv) return;
+
+  const options = mod.walkOptions();
+  if (!options.length) return;
+  pick.innerHTML = options
+    .map(
+      (o) =>
+        `<option value="${escapeHtml(o.id)}">${escapeHtml(o.label)} — ${o.length} m${
+          o.direct ? ' (à vol d’oiseau)' : ''
+        }</option>`
+    )
+    .join('');
+  box.hidden = false;
+
+  let running = false;
+  let finished = false;
+  const leave = (): void => {
+    running = false;
+    finished = false;
+    mod.stopWalk();
+    banner.hidden = true;
+    mini.hidden = true;
+    stop.hidden = true;
+    pick.disabled = false;
+    if (legend) legend.hidden = false;
+    play.textContent = 'Parcourir le trajet';
+    state.textContent = '';
+  };
+
+  const begin = (): void => {
+    const chosen = options.find((o) => o.id === pick.value) ?? options[0];
+    // Le compteur est en zone `aria-live` : le rafraîchir à chaque image le
+    // ferait annoncer soixante fois par seconde. On ne le touche que tous les
+    // dix mètres, ce qui suffit à suivre la progression.
+    let said = -1;
+    const ok = mod.startWalk(chosen.id, miniCv, (f) => {
+      const step = Math.round(f.remaining / 10);
+      if (f.done) {
+        state.textContent = 'Arrivée à l’entrée.';
+      } else if (step !== said) {
+        said = step;
+        state.textContent = `Encore ${step * 10} m`;
+      }
+      if (f.done && !finished) {
+        finished = true;
+        play.textContent = 'Recommencer';
+        // Le trajet est terminé : on peut de nouveau en choisir un autre.
+        pick.disabled = false;
+      }
+    });
+    if (!ok) return;
+    running = true;
+    finished = false;
+    play.textContent = 'Suspendre';
+    stop.hidden = false;
+    pick.disabled = true;
+    banner.hidden = false;
+    mini.hidden = false;
+    // La légende laisse la place : au ras du sol, c'est la vue elle-même qui
+    // porte l'information, et l'écran est déjà chargé.
+    if (legend) legend.hidden = true;
+  };
+
+  play.addEventListener('click', () => {
+    if (!running || finished) {
+      begin();
+      return;
+    }
+    // Deuxième appui en cours de route : on suspend sans quitter la hauteur de
+    // fauteuil, pour regarder autour de soi à un endroit précis.
+    const paused = play.textContent === 'Reprendre';
+    mod.setWalkPlaying(paused);
+    play.textContent = paused ? 'Suspendre' : 'Reprendre';
+  });
+
+  stop.addEventListener('click', leave);
 }
 
 /**

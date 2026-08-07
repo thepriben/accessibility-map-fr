@@ -34,6 +34,78 @@ export interface RouteResult {
   direct: boolean;
 }
 
+/** Trajet préparé pour être parcouru : abscisses curvilignes précalculées. */
+export interface WalkPath {
+  points: P2[];
+  /** Distance cumulée à chaque sommet ; `cum[0] = 0`. */
+  cum: number[];
+  total: number;
+}
+
+/** Position et cap le long d'un trajet, à une distance donnée du départ. */
+export interface WalkPose {
+  x: number;
+  z: number;
+  /** Vecteur unitaire de la direction du regard. */
+  hx: number;
+  hz: number;
+}
+
+/** Prépare un trajet pour l'échantillonnage : sommets confondus écartés. */
+export function measureWalk(points: P2[]): WalkPath {
+  const pts: P2[] = [];
+  for (const p of points) {
+    const last = pts[pts.length - 1];
+    if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 1e-3) pts.push(p);
+  }
+  const cum = [0];
+  for (let i = 1; i < pts.length; i += 1) {
+    cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  }
+  return { points: pts, cum, total: cum[cum.length - 1] ?? 0 };
+}
+
+/** Point du trajet à l'abscisse `d`, bornée aux extrémités. */
+function pointAt(w: WalkPath, d: number): P2 {
+  const { points, cum, total } = w;
+  if (points.length === 0) return [0, 0];
+  if (points.length === 1 || total === 0) return points[0];
+  const t = Math.min(Math.max(d, 0), total);
+  let i = 1;
+  while (i < cum.length - 1 && cum[i] < t) i += 1;
+  const seg = cum[i] - cum[i - 1] || 1;
+  const k = (t - cum[i - 1]) / seg;
+  return [
+    points[i - 1][0] + (points[i][0] - points[i - 1][0]) * k,
+    points[i - 1][1] + (points[i][1] - points[i - 1][1]) * k,
+  ];
+}
+
+/**
+ * Position et cap à l'abscisse `d`.
+ *
+ * Le cap ne suit pas le segment courant mais vise un point situé `lookAhead`
+ * mètres plus loin : sur un trottoir découpé en petits tronçons, suivre chaque
+ * segment ferait tressauter la vue à chaque sommet.
+ */
+export function sampleWalk(w: WalkPath, d: number, lookAhead = 4): WalkPose {
+  const here = pointAt(w, d);
+  // En fin de parcours, on garde le cap des derniers mètres plutôt que de
+  // pivoter au hasard sur un vecteur nul.
+  const ahead =
+    d + lookAhead <= w.total ? pointAt(w, d + lookAhead) : pointAt(w, w.total);
+  let hx = ahead[0] - here[0];
+  let hz = ahead[1] - here[1];
+  let len = Math.hypot(hx, hz);
+  if (len < 1e-6) {
+    const back = pointAt(w, Math.max(w.total - lookAhead, 0));
+    hx = w.points.length > 1 ? here[0] - back[0] : 1;
+    hz = w.points.length > 1 ? here[1] - back[1] : 0;
+    len = Math.hypot(hx, hz) || 1;
+  }
+  return { x: here[0], z: here[1], hx: hx / len, hz: hz / len };
+}
+
 /**
  * Point de l'empreinte d'un bâtiment le plus proche du réseau piéton, décalé de
  * `out` mètres vers l'extérieur.
