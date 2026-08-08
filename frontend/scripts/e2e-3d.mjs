@@ -258,6 +258,46 @@ try {
     }))()`);
     console.log(`simulation: ${JSON.stringify(running)}`);
     await shot('5-simulation');
+
+    // Commandes de lecture : la position doit se reprendre à volonté, et un
+    // trajet ramené en arrière ne doit plus se croire terminé.
+    const press = async (id) => {
+      await evaluate(`document.getElementById('${id}').click()`);
+      await sleep(400);
+    };
+    const at = () => evaluate(`Number(document.getElementById('sim-seek').value)`);
+    const label = () => evaluate(`document.getElementById('sim-play').textContent.trim()`);
+    const played = await at();
+    await press('sim-back');
+    const back = await at();
+    await press('sim-fwd');
+    const fwd = await at();
+    await press('sim-start');
+    const start = await at();
+    await press('sim-end');
+    const [end, endLabel] = [await at(), await label()];
+    console.log(`arrivée: ${await evaluate(`document.getElementById('sim-state').textContent.trim()`)}`);
+    await press('sim-back');
+    const [reopen, reopenLabel] = [await at(), await label()];
+    console.log(
+      `lecture: joué ${played} m, recul ${back} m, avance ${fwd} m, ` +
+        `départ ${start} m, arrivée ${end} m (${endLabel}), ` +
+        `rembobiné ${reopen} m (${reopenLabel})`
+    );
+
+    // Allure : ×4 doit faire progresser nettement plus vite qu'à l'arrêt.
+    await evaluate(`(() => {
+      const s = document.getElementById('sim-speed');
+      s.value = '4';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('sim-play').click();
+    })()`);
+    const t0 = await at();
+    await sleep(2000);
+    const t1 = await at();
+    console.log(`allure ×4 : ${t1 - t0} m en 2 s (attendu ~6,4 m)`);
+    await shot('6-lecture');
+
     await evaluate(`document.getElementById('sim-stop').click()`);
     await sleep(700);
     const left = await evaluate(

@@ -316,17 +316,23 @@ a { color: var(--focus); }
   left: 50%; bottom: 46px;
   transform: translateX(-50%);
   pointer-events: auto;
-}
-.sim-controls {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
+  width: max-content;
+  max-width: min(760px, 94vw);
   padding: 8px 10px;
   border-radius: 12px;
   background: rgba(12, 16, 22, 0.88);
   color: #eaf0f7;
 }
-.sim-controls select {
+.scene3d-sim[hidden] { display: none; }
+.sim-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scene3d-sim select {
   border: 0; border-radius: 8px; padding: 7px 9px;
   background: #1e2733; color: #eaf0f7; font-size: 0.82rem; max-width: 260px;
 }
@@ -337,6 +343,31 @@ a { color: var(--focus); }
 }
 .sim-quiet { background: #2b3644; color: #d7e0ec; }
 .sim-state { font-size: 0.78rem; color: #9fb1cf; min-width: 88px; }
+
+/* Commandes de lecture : on revient en arriere pour reexaminer un ressaut ou
+   un retrecissement, donc la position doit se reprendre a volonte. */
+.sim-transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+.sim-transport[hidden] { display: none; }
+.sim-step {
+  border: 0; border-radius: 8px; cursor: pointer;
+  width: 34px; height: 32px; padding: 0;
+  background: #2b3644; color: #e6edf7;
+  font-size: 0.8rem; line-height: 1;
+}
+.sim-step:hover { background: #3a4859; }
+.sim-seek { flex: 1 1 180px; display: flex; min-width: 120px; }
+.sim-seek input {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.sim-speed select { max-width: 160px; }
 
 /* L'avertissement reste visible tout du long : la scene est une reconstitution,
    pas un releve, et la confondre avec le terrain aurait des consequences. */

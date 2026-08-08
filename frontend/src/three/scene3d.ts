@@ -151,6 +151,8 @@ interface WalkState {
   /** Abscisse curviligne atteinte, en metres depuis le depart. */
   d: number;
   playing: boolean;
+  /** Multiplicateur d'allure : 1 = vitesse reelle d'un fauteuil manuel. */
+  speed: number;
   mini: HTMLCanvasElement | null;
   onFrame: (f: WalkFrame) => void;
   /** Vue d'ensemble a restituer en sortie de simulation. */
@@ -182,11 +184,14 @@ let sceneToken: object | null = null;
 let walkable: { option: WalkOption; path: WalkPath }[] = [];
 
 /**
- * Materiaux des trajets traces au sol. Vus de dessus ils guident l'oeil ; a
- * hauteur d'yeux, le tiret le plus proche occupe la moitie de l'ecran et cache
- * precisement le sol qu'on vient inspecter. On les attenue le temps du parcours.
+ * Materiaux des marquages poses a plat au sol : trajets en pointilles et
+ * rubans de lignes de bus. Vus de dessus ils guident l'oeil ; a hauteur
+ * d'yeux, le plus proche occupe la moitie de l'ecran et cache precisement le
+ * sol qu'on vient inspecter. On les attenue le temps du parcours, chacun selon
+ * ce qu'il apporte alors : le trajet suivi reste lisible, les lignes de bus
+ * s'effacent presque.
  */
-let routeMats: THREE.Material[] = [];
+let groundMats: { mat: THREE.Material; dim: number }[] = [];
 
 /**
  * Fond de carte assemble pour la scene courante, conserve pour le medaillon de
@@ -201,8 +206,14 @@ let miniBase: {
   south: number;
 } | null = null;
 
-/** Allure retenue : celle d'un fauteuil manuel sur un trottoir. */
+/** Allure de référence : celle d'un fauteuil manuel sur un trottoir (m/s). */
 const WALK_SPEED = 0.8;
+
+/**
+ * Allure choisie, conservée d'un trajet à l'autre : qui a ralenti pour
+ * inspecter un passage veut la même allure sur le trajet suivant.
+ */
+let walkSpeed = 1;
 /** Hauteur des yeux d'une personne assise en fauteuil. */
 const EYE_HEIGHT = 1.2;
 
@@ -601,7 +612,7 @@ function makeRoute(
   group.add(routeEnd(points[0][0], points[0][1], colour));
   group.add(routeEnd(points[points.length - 1][0], points[points.length - 1][1], colour));
 
-  routeMats.push(mesh.material as THREE.Material);
+  groundMats.push({ mat: mesh.material as THREE.Material, dim: 0.45 });
 
   return {
     group,
@@ -731,6 +742,10 @@ function flatPolygon(ring: [number, number][]): THREE.BufferGeometry | null {
 // Couleurs de repli pour les lignes de bus dont le réseau ne publie pas de
 // `colour` : teintes franches et bien distinctes entre elles.
 const BUS_PALETTE = [0x2b6cb0, 0x8b5cf6, 0xd6336c, 0xd97706, 0x0f9b8e, 0xb45309, 0x4f46e5];
+
+/** Largeur des dalles du réseau piéton (m) : trottoir, puis cheminement. */
+const SIDEWALK_W = 1.6;
+const FOOTWAY_W = 1.4;
 
 /** Largeur du ruban coloré d'une ligne de bus (m). */
 const BUS_BAND_W = 0.58;
@@ -1407,41 +1422,73 @@ function makeElevator(x: number, z: number, accessible: boolean): THREE.Group {
  * Barriere de passage (portillon, chicane, bloc). Contrairement a une borne
  * isolee, elle reduit la largeur utile et bloque souvent un fauteuil : on la
  * marque donc en teinte d'alerte.
+ *
+ * OSM ne porte qu'un point ; ce qui renseigne l'usager, c'est l'emprise en
+ * travers du passage. La barriere est donc posee d'un bord a l'autre du
+ * cheminement, montants compris : on voit d'un coup d'oeil s'il reste de la
+ * place pour un fauteuil. `pathAngle` est l'angle du cheminement, la rotation
+ * en quart de tour est faite ici pour qu'aucun appelant ne l'oublie.
  */
-function makeBarrier(x: number, z: number, angle: number, variant: string | null): THREE.Group {
+function makeBarrier(
+  x: number,
+  z: number,
+  pathAngle: number,
+  variant: string | null,
+  width = 1.7
+): THREE.Group {
   const g = new THREE.Group();
   const mat = new THREE.MeshStandardMaterial({
     color: 0xb8783a,
     roughness: 0.6,
     metalness: 0.3,
   });
+  const half = Math.max(0.55, width / 2);
+
+  /** Montant vertical, planté au bord du passage. */
+  const post = (px: number, pz = 0, h = 1.15): THREE.Mesh => {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, h, 8), mat);
+    m.position.set(px, h / 2, pz);
+    m.castShadow = true;
+    return m;
+  };
+  /** Lisse horizontale entre deux abscisses, en travers du cheminement. */
+  const rail = (x0: number, x1: number, y: number, pz = 0): THREE.Mesh => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(Math.abs(x1 - x0), 0.1, 0.07), mat);
+    m.position.set((x0 + x1) / 2, y, pz);
+    m.castShadow = true;
+    return m;
+  };
+
   if (variant === 'cycle_barrier' || variant === 'chicane') {
-    // Chicane : deux barres decalees imposant un zigzag, impraticable en fauteuil.
-    for (const s of [-1, 1]) {
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.0, 1.2), mat);
-      bar.position.set(s * 0.45, 0.5, s * 0.35);
-      bar.castShadow = true;
-      g.add(bar);
-    }
+    // Chicane : deux lisses décalées qui se recouvrent au centre. Il faut
+    // contourner l'une puis l'autre, ce qu'un fauteuil ne peut presque jamais.
+    g.add(post(-half, -0.45), post(0.2, -0.45), rail(-half, 0.2, 0.95, -0.45));
+    g.add(post(half, 0.45), post(-0.2, 0.45), rail(-0.2, half, 0.95, 0.45));
   } else if (variant === 'block') {
-    const block = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.6, 0.6), mat);
-    block.position.y = 0.3;
-    block.castShadow = true;
-    g.add(block);
-  } else {
-    // Portillon : deux montants et une lisse.
-    for (const s of [-1, 1]) {
-      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.2, 8), mat);
-      post.position.set(s * 0.8, 0.6, 0);
-      post.castShadow = true;
-      g.add(post);
+    // Blocs alignés en travers : le passage ne subsiste qu'entre eux.
+    const n = Math.max(2, Math.round((half * 2) / 0.9));
+    for (let i = 0; i < n; i += 1) {
+      const block = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.55), mat);
+      block.position.set(-half + (i * (half * 2)) / (n - 1), 0.28, 0);
+      block.castShadow = true;
+      g.add(block);
     }
-    const rail = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.08), mat);
-    rail.position.y = 0.95;
-    g.add(rail);
+  } else if (variant === 'lift_gate') {
+    // Barrière levante : montants de part et d'autre, lisse relevée d'un côté.
+    g.add(post(-half, 0, 1.25), post(half, 0, 0.75));
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(half * 2, 0.1, 0.1), mat);
+    arm.position.set(0, 1.0, 0);
+    arm.rotation.z = -0.18;
+    arm.castShadow = true;
+    g.add(arm);
+  } else {
+    // Portillon : montants aux deux bords, lisse haute et lisse basse.
+    g.add(post(-half), post(half), rail(-half, half, 0.95), rail(-half, half, 0.5));
   }
+
   g.position.set(x, 0, z);
-  g.rotation.y = angle;
+  // Quart de tour : la barrière barre le cheminement au lieu de le longer.
+  g.rotation.y = pathAngle + Math.PI / 2;
   return g;
 }
 
@@ -1592,6 +1639,9 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   const dark = payload.theme === 'dark';
   const th = themeColors(dark);
   const toLocal = projector(payload.place.lng, payload.place.lat);
+  // Les marquages au sol se déclarent au fil du décor : la liste se vide donc
+  // ici, avant que quoi que ce soit ne s'y inscrive.
+  groundMats = [];
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(th.bg);
@@ -1869,7 +1919,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
 
     // Trottoir : petite épaisseur (dalle surélevée) pour un rendu plus lisible.
     if (path.kind === 'sidewalk') {
-      const geom = ribbonSlab(pts, 1.6, 0.12);
+      const geom = ribbonSlab(pts, SIDEWALK_W, 0.12);
       if (!geom) continue;
       const mesh = new THREE.Mesh(geom, curbMat);
       mesh.castShadow = true;
@@ -1880,7 +1930,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
 
       // Footway / cheminement piéton : dalle fine surélevée (teinte pavé).
       if (path.kind === 'footway') {
-        const geom = ribbonSlab(pts, 1.4, 0.07);
+        const geom = ribbonSlab(pts, FOOTWAY_W, 0.07);
         if (!geom) continue;
         const mesh = new THREE.Mesh(geom, footMat);
         mesh.castShadow = true;
@@ -2043,23 +2093,26 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   const busLongest: ([number, number][] | null)[] = busLines.map(() => null);
   const busMats = busLines.map((line, li) => {
     const col = busColour(line, li);
-    return {
-      col,
-      band: new THREE.MeshStandardMaterial({
-        color: col,
-        roughness: 0.45,
-        emissive: col,
-        emissiveIntensity: 0.16,
-        side: THREE.DoubleSide,
-      }),
-      // Liseré sombre : détache le ruban de l'asphalte et sépare deux lignes
-      // voisines sans ajouter de couleur à la scène.
-      casing: new THREE.MeshStandardMaterial({
-        color: new THREE.Color(col).multiplyScalar(0.45),
-        roughness: 0.8,
-        side: THREE.DoubleSide,
-      }),
-    };
+    const band = new THREE.MeshStandardMaterial({
+      color: col,
+      roughness: 0.45,
+      emissive: col,
+      emissiveIntensity: 0.16,
+      side: THREE.DoubleSide,
+      // Vus de dessus les rubans se lisent bien ; a hauteur d'yeux ils
+      // tapissent tout le sol, d'ou l'attenuation pendant la simulation.
+      transparent: true,
+    });
+    // Liseré sombre : détache le ruban de l'asphalte et sépare deux lignes
+    // voisines sans ajouter de couleur à la scène.
+    const casing = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(col).multiplyScalar(0.45),
+      roughness: 0.8,
+      side: THREE.DoubleSide,
+      transparent: true,
+    });
+    groundMats.push({ mat: band, dim: 0.2 }, { mat: casing, dim: 0.2 });
+    return { col, band, casing };
   });
   busRuns.forEach((run, i) => {
     const { band, casing } = busMats[run.line];
@@ -2295,18 +2348,37 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
           ],
         });
         break;
-      case 'barrier':
-        addInfo(makeBarrier(x, z, nearestLineDir(x, z, allGuides)?.angle ?? 0, f.variant ?? null), {
-          title: f.variant === 'cycle_barrier' || f.variant === 'chicane' ? 'Chicane' : 'Barrière',
-          colour: 0xb8783a,
-          details: [
-            f.variant ? `Type OSM : ${f.variant}` : null,
-            f.variant === 'cycle_barrier' || f.variant === 'chicane'
-              ? 'Passage étroit, souvent infranchissable en fauteuil'
-              : 'Réduit la largeur de passage',
-          ],
-        });
+      case 'barrier': {
+        // Une barrière barre un passage : c'est d'abord au réseau piéton
+        // qu'elle appartient, et à la voirie seulement si celle-ci est
+        // nettement plus proche (portail de parking, borne d'accès).
+        const onFoot = nearestLineDir(x, z, footLines);
+        const onRoad = nearestLineDir(x, z, roadLines);
+        const foot = !!onFoot && (!onRoad || onFoot.dist <= onRoad.dist + 1.5);
+        const guide = foot ? onFoot : onRoad;
+        addInfo(
+          makeBarrier(
+            x,
+            z,
+            guide?.angle ?? 0,
+            f.variant ?? null,
+            // Un peu plus large que le passage : les montants se posent sur
+            // ses bords, pas au milieu.
+            foot ? SIDEWALK_W + 0.4 : 4.4
+          ),
+          {
+            title: f.variant === 'cycle_barrier' || f.variant === 'chicane' ? 'Chicane' : 'Barrière',
+            colour: 0xb8783a,
+            details: [
+              f.variant ? `Type OSM : ${f.variant}` : null,
+              f.variant === 'cycle_barrier' || f.variant === 'chicane'
+                ? 'Passage étroit, souvent infranchissable en fauteuil'
+                : 'Réduit la largeur de passage',
+            ],
+          }
+        );
         break;
+      }
       default:
         // Bancs, arrêts de bus et passages piétons sont déjà rendus depuis
         // leurs propres listes.
@@ -2373,7 +2445,6 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     });
 
   walkable = [];
-  routeMats = [];
   for (const a of arrivals) {
     const route = findRoute(walkNet, a.from, destination);
     const drawn = makeRoute(route.points, COLOR_ROUTE);
@@ -2543,6 +2614,10 @@ export interface WalkOption {
 export interface WalkFrame {
   /** Avancement de 0 à 1. */
   progress: number;
+  /** Distance déjà parcourue, en mètres. */
+  distance: number;
+  /** Longueur totale du trajet, en mètres. */
+  total: number;
   /** Distance restant à parcourir, en mètres. */
   remaining: number;
   playing: boolean;
@@ -2574,6 +2649,7 @@ export function startWalk(
     path: found.path,
     d: 0,
     playing: true,
+    speed: walkSpeed,
     mini,
     onFrame,
     saved: { pos: c.camera.position.clone(), target: c.controls.target.clone() },
@@ -2581,13 +2657,31 @@ export function startWalk(
   c.controls.enabled = false;
   c.hover?.dispose();
   c.hover = null;
-  for (const m of routeMats) m.opacity = 0.4;
+  for (const g of groundMats) g.mat.opacity = g.dim;
   return true;
 }
 
 /** Suspend ou reprend le parcours sans quitter la vue à hauteur de fauteuil. */
 export function setWalkPlaying(playing: boolean): void {
   if (ctx?.walk) ctx.walk.playing = playing;
+}
+
+/** Change l'allure en cours de route (1 = allure réelle d'un fauteuil manuel). */
+export function setWalkSpeed(mult: number): void {
+  walkSpeed = mult;
+  if (ctx?.walk) ctx.walk.speed = mult;
+}
+
+/**
+ * Déplace le point de vue le long du trajet. `metres` est absolu, ou relatif à
+ * la position courante si `relative`. Revenir en arrière rouvre le parcours :
+ * un trajet arrivé au bout n'est plus terminé une fois qu'on l'a rembobiné.
+ */
+export function seekWalk(metres: number, relative = false): void {
+  const w = ctx?.walk;
+  if (!w) return;
+  const target = relative ? w.d + metres : metres;
+  w.d = Math.max(0, Math.min(target, w.path.total));
 }
 
 /** Quitte la simulation et rend la vue d'ensemble telle qu'elle était. */
@@ -2598,14 +2692,14 @@ export function stopWalk(): void {
   c.controls.target.copy(c.walk.saved.target);
   c.controls.enabled = true;
   c.controls.update();
-  for (const m of routeMats) m.opacity = 1;
+  for (const g of groundMats) g.mat.opacity = 1;
   c.walk = null;
 }
 
 /** Fait avancer la caméra le long du trajet et rafraîchit le médaillon. */
 function advanceWalk(c: Ctx, w: WalkState, dt: number): void {
   if (w.playing) {
-    w.d = Math.min(w.d + dt * WALK_SPEED, w.path.total);
+    w.d = Math.min(w.d + dt * WALK_SPEED * w.speed, w.path.total);
     if (w.d >= w.path.total) w.playing = false;
   }
   const p = sampleWalk(w.path, w.d);
@@ -2616,6 +2710,8 @@ function advanceWalk(c: Ctx, w: WalkState, dt: number): void {
   if (w.mini) paintWalkMini(w.mini, w.path, p);
   w.onFrame({
     progress: w.path.total ? w.d / w.path.total : 1,
+    distance: w.d,
+    total: w.path.total,
     remaining: Math.max(w.path.total - w.d, 0),
     playing: w.playing,
     done: w.d >= w.path.total,
@@ -3042,7 +3138,7 @@ export function stopScene3D(): void {
   sceneToken = null;
   ctx.walk = null;
   walkable = [];
-  routeMats = [];
+  groundMats = [];
   miniBase = null;
   cancelAnimationFrame(ctx.raf);
   ctx.ro?.disconnect();

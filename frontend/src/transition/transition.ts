@@ -160,7 +160,26 @@ function walkHtml(): string {
         </label>
         <button id="sim-play" type="button" class="sim-btn">Parcourir le trajet</button>
         <button id="sim-stop" type="button" class="sim-btn sim-quiet" hidden>Quitter la simulation</button>
+      </div>
+      <div id="sim-transport" class="sim-transport" hidden>
+        <button id="sim-start" type="button" class="sim-step" title="Revenir au départ" aria-label="Revenir au départ">⏮</button>
+        <button id="sim-back" type="button" class="sim-step" title="Reculer de 10 mètres" aria-label="Reculer de 10 mètres">⏪</button>
+        <button id="sim-fwd" type="button" class="sim-step" title="Avancer de 10 mètres" aria-label="Avancer de 10 mètres">⏩</button>
+        <button id="sim-end" type="button" class="sim-step" title="Aller à l’arrivée" aria-label="Aller à l’arrivée">⏭</button>
+        <label class="sim-seek">
+          <span class="sr-only">Position sur le trajet, en mètres</span>
+          <input id="sim-seek" type="range" min="0" max="100" step="1" value="0" />
+        </label>
         <span id="sim-state" class="sim-state" role="status" aria-live="polite"></span>
+        <label class="sim-speed">
+          <span class="sr-only">Allure de la simulation</span>
+          <select id="sim-speed">
+            <option value="0.5">×0,5 — au ralenti</option>
+            <option value="1" selected>×1 — allure réelle</option>
+            <option value="2">×2</option>
+            <option value="4">×4</option>
+          </select>
+        </label>
       </div>
     </div>
     <div id="scene3d-sim-banner" class="scene3d-sim-banner" hidden>
@@ -182,12 +201,16 @@ function setupWalkUI(mod: SceneMod): void {
   const pick = document.getElementById('sim-route') as HTMLSelectElement | null;
   const play = document.getElementById('sim-play') as HTMLButtonElement | null;
   const stop = document.getElementById('sim-stop') as HTMLButtonElement | null;
+  const transport = document.getElementById('sim-transport');
+  const seek = document.getElementById('sim-seek') as HTMLInputElement | null;
+  const speed = document.getElementById('sim-speed') as HTMLSelectElement | null;
   const state = document.getElementById('sim-state');
   const banner = document.getElementById('scene3d-sim-banner');
   const mini = document.getElementById('scene3d-mini');
   const miniCv = document.getElementById('sim-mini') as HTMLCanvasElement | null;
   const legend = document.querySelector('.scene3d-legend') as HTMLElement | null;
   if (!box || !pick || !play || !stop || !state || !banner || !mini || !miniCv) return;
+  if (!transport || !seek || !speed) return;
 
   const options = mod.walkOptions();
   if (!options.length) return;
@@ -201,8 +224,13 @@ function setupWalkUI(mod: SceneMod): void {
     .join('');
   box.hidden = false;
 
+  /** Pas des commandes de recul et d'avance, en mètres. */
+  const STEP_M = 10;
   let running = false;
   let finished = false;
+  /** Vrai pendant qu'on tire le curseur : la trame ne doit pas le reprendre. */
+  let scrubbing = false;
+
   const leave = (): void => {
     running = false;
     finished = false;
@@ -210,6 +238,7 @@ function setupWalkUI(mod: SceneMod): void {
     banner.hidden = true;
     mini.hidden = true;
     stop.hidden = true;
+    transport.hidden = true;
     pick.disabled = false;
     if (legend) legend.hidden = false;
     play.textContent = 'Parcourir le trajet';
@@ -223,25 +252,28 @@ function setupWalkUI(mod: SceneMod): void {
     // dix mètres, ce qui suffit à suivre la progression.
     let said = -1;
     const ok = mod.startWalk(chosen.id, miniCv, (f) => {
-      const step = Math.round(f.remaining / 10);
-      if (f.done) {
-        state.textContent = 'Arrivée à l’entrée.';
-      } else if (step !== said) {
+      if (!scrubbing) {
+        seek.max = String(Math.max(1, Math.round(f.total)));
+        seek.value = String(Math.round(f.distance));
+      }
+      const step = f.done ? -2 : Math.round(f.remaining / 10);
+      if (step !== said) {
         said = step;
-        state.textContent = `Encore ${step * 10} m`;
+        state.textContent = f.done ? 'Arrivée à l’entrée.' : `Encore ${step * 10} m`;
       }
-      if (f.done && !finished) {
-        finished = true;
-        play.textContent = 'Recommencer';
-        // Le trajet est terminé : on peut de nouveau en choisir un autre.
-        pick.disabled = false;
-      }
+      // Le libellé se lit sur la trame plutôt que d'être posé par chaque
+      // commande : arrivée, pause et reprise se ramènent au même calcul, et
+      // revenir en arrière rouvre naturellement un trajet déjà terminé.
+      finished = f.done;
+      const label = f.done ? 'Recommencer' : f.playing ? 'Suspendre' : 'Reprendre';
+      if (play.textContent !== label) play.textContent = label;
     });
     if (!ok) return;
     running = true;
     finished = false;
     play.textContent = 'Suspendre';
     stop.hidden = false;
+    transport.hidden = false;
     pick.disabled = true;
     banner.hidden = false;
     mini.hidden = false;
@@ -251,16 +283,55 @@ function setupWalkUI(mod: SceneMod): void {
   };
 
   play.addEventListener('click', () => {
-    if (!running || finished) {
+    if (!running) {
       begin();
       return;
     }
+    // Une fois arrivé, le bouton repart du départ plutôt que de rester inerte.
+    if (finished) mod.seekWalk(0);
     // Deuxième appui en cours de route : on suspend sans quitter la hauteur de
     // fauteuil, pour regarder autour de soi à un endroit précis.
-    const paused = play.textContent === 'Reprendre';
-    mod.setWalkPlaying(paused);
-    play.textContent = paused ? 'Suspendre' : 'Reprendre';
+    mod.setWalkPlaying(finished || play.textContent === 'Reprendre');
   });
+
+  // Commandes de déplacement. Le parcours reste en pause après un saut : on se
+  // déplace pour observer un point précis, pas pour repartir aussitôt.
+  const jump = (fn: () => void): void => {
+    if (!running) return;
+    fn();
+    mod.setWalkPlaying(false);
+  };
+  document.getElementById('sim-start')?.addEventListener('click', () => jump(() => mod.seekWalk(0)));
+  document
+    .getElementById('sim-back')
+    ?.addEventListener('click', () => jump(() => mod.seekWalk(-STEP_M, true)));
+  document
+    .getElementById('sim-fwd')
+    ?.addEventListener('click', () => jump(() => mod.seekWalk(STEP_M, true)));
+  // L'arrivée se demande sans borne : le curseur est arrondi au mètre, il
+  // s'arrêterait juste avant la fin et le trajet ne se saurait pas terminé.
+  document
+    .getElementById('sim-end')
+    ?.addEventListener('click', () => jump(() => mod.seekWalk(Number.POSITIVE_INFINITY)));
+
+  // Curseur de position : au clavier, les flèches le parcourent mètre par
+  // mètre, ce qui donne un recul et une avance fine sans commande dédiée.
+  const grab = (): void => {
+    scrubbing = true;
+  };
+  const release = (): void => {
+    scrubbing = false;
+  };
+  seek.addEventListener('pointerdown', grab);
+  seek.addEventListener('pointerup', release);
+  seek.addEventListener('pointercancel', release);
+  seek.addEventListener('input', () => {
+    if (!running) return;
+    mod.seekWalk(Number(seek.value));
+    mod.setWalkPlaying(false);
+  });
+
+  speed.addEventListener('change', () => mod.setWalkSpeed(Number(speed.value)));
 
   stop.addEventListener('click', leave);
 }
