@@ -3,11 +3,11 @@ import { MapControls } from 'three/addons/controls/MapControls.js';
 import type {
   NeighborhoodData,
   OsmBuilding,
-  OsmBusRoute,
   OsmEntrance,
   OsmFurniture,
   OsmPath,
 } from '../data/overpass';
+import { busPlacements, dropTwinRuns, mergeBusRoutes, type BusLine, type BusRun } from './bus';
 import { attachHover, tagInfo, type HoverHandle, type SceneInfo } from './hover';
 import {
   findRoute,
@@ -732,12 +732,29 @@ function flatPolygon(ring: [number, number][]): THREE.BufferGeometry | null {
 // `colour` : teintes franches et bien distinctes entre elles.
 const BUS_PALETTE = [0x2b6cb0, 0x8b5cf6, 0xd6336c, 0xd97706, 0x0f9b8e, 0xb45309, 0x4f46e5];
 
+/** Largeur du ruban coloré d'une ligne de bus (m). */
+const BUS_BAND_W = 0.58;
+/** Largeur du liseré sombre qui l'entoure (m). */
+const BUS_CASING_W = 0.92;
+
 /** Couleur d'une ligne : celle du réseau si connue, sinon stable par ligne. */
-function busColour(route: OsmBusRoute, index: number): number {
-  const own = parseColourOrNull(route.colour);
+function busColour(line: BusLine, index: number): number {
+  const own = parseColourOrNull(line.colour);
   if (own != null) return own;
-  const key = route.ref ?? route.name ?? route.id;
+  const key = line.ref ?? line.name ?? line.key;
   return BUS_PALETTE[(Math.floor(hash01(key) * BUS_PALETTE.length) + index) % BUS_PALETTE.length];
+}
+
+/**
+ * Noir ou blanc selon le fond : les réseaux publient aussi bien un bleu foncé
+ * qu'un jaune vif, sur lequel du texte blanc serait illisible.
+ */
+function readableOn(colour: number): string {
+  const r = (colour >> 16) & 0xff;
+  const g = (colour >> 8) & 0xff;
+  const b = colour & 0xff;
+  // Luminance perçue (Rec. 709), suffisante pour trancher entre deux encres.
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.6 ? '#1a1d22' : '#ffffff';
 }
 
 /** Décale une polyligne perpendiculairement (lignes de bus parallèles lisibles). */
@@ -2002,69 +2019,125 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     scene.add(label);
   }
 
-  // --- Lignes de bus : ruban coloré suivant le tracé, décalé quand plusieurs
-  // lignes empruntent la même voie, avec la pastille du numéro. ---
-  const busRoutes = nb.busRoutes ?? [];
-  busRoutes.forEach((route, ri) => {
-    const col = busColour(route, ri);
-    const mat = new THREE.MeshStandardMaterial({
-      color: col,
-      roughness: 0.5,
-      emissive: col,
-      emissiveIntensity: 0.2,
-      side: THREE.DoubleSide,
-    });
-    const joint = new THREE.CircleGeometry(0.32, 12);
-    const lateral = (ri - (busRoutes.length - 1) / 2) * 0.85;
-    // Un groupe par ligne : le survol renvoie la ligne entiere, quel que soit
-    // le troncon designe.
-    const group = new THREE.Group();
-    let longest: [number, number][] | null = null;
-    for (const seg of route.segments) {
+  // --- Lignes de bus : un seul ruban par ligne, au milieu de la chaussée. ---
+  // Les relations OSM (un sens, parfois plusieurs variantes) sont réunies en
+  // amont ; il ne reste ici qu'un tracé par numéro de ligne, écarté de l'axe
+  // uniquement là où plusieurs lignes se partagent la rue.
+  const busLines = mergeBusRoutes(nb.busRoutes ?? []);
+  const busSpread: BusRun[] = [];
+  busLines.forEach((line, li) => {
+    for (const seg of line.segments) {
       const local = seg.map((p) => toLocal(p[0], p[1]));
-      for (const run of clipToRadius(local, Math.max(maxR, 60))) {
-        const line = offsetPolyline(run, lateral);
-        const geom = ribbon(line, 0.62);
-        if (geom) {
-          const mesh = new THREE.Mesh(geom, mat);
-          mesh.position.y = 0.14;
-          group.add(mesh);
-        }
-        // Pastilles aux sommets : le ruban reste continu dans les virages.
-        for (const [jx, jz] of line) {
-          const dot = new THREE.Mesh(joint, mat);
-          dot.rotation.x = -Math.PI / 2;
-          dot.position.set(jx, 0.14, jz);
-          group.add(dot);
-        }
-        if (!longest || pathLength(line) > pathLength(longest)) longest = line;
+      for (const run of clipToRadius(local, Math.max(maxR, 60)))
+        if (run.length >= 2) busSpread.push({ line: li, points: run });
+    }
+  });
+  const busRuns = dropTwinRuns(busSpread);
+  const busPlaced = busPlacements(
+    busRuns,
+    busLines.map((l) => l.ref ?? l.key)
+  );
+  // Un groupe par ligne : le survol renvoie la ligne entière, quel que soit le
+  // tronçon désigné.
+  const busGroups = busLines.map(() => new THREE.Group());
+  const busLongest: ([number, number][] | null)[] = busLines.map(() => null);
+  const busMats = busLines.map((line, li) => {
+    const col = busColour(line, li);
+    return {
+      col,
+      band: new THREE.MeshStandardMaterial({
+        color: col,
+        roughness: 0.45,
+        emissive: col,
+        emissiveIntensity: 0.16,
+        side: THREE.DoubleSide,
+      }),
+      // Liseré sombre : détache le ruban de l'asphalte et sépare deux lignes
+      // voisines sans ajouter de couleur à la scène.
+      casing: new THREE.MeshStandardMaterial({
+        color: new THREE.Color(col).multiplyScalar(0.45),
+        roughness: 0.8,
+        side: THREE.DoubleSide,
+      }),
+    };
+  });
+  busRuns.forEach((run, i) => {
+    const { band, casing } = busMats[run.line];
+    const group = busGroups[run.line];
+    const place = busPlaced[i];
+    const line = offsetPolyline(run.points, place.offset);
+    // Sur un axe très desservi, les rubans se resserrent : leur largeur suit le
+    // pas du faisceau, sinon ils se rejoindraient en un aplat multicolore.
+    const casingW = Math.min(BUS_CASING_W, place.spacing);
+    const bandW = Math.min(BUS_BAND_W, casingW * 0.62);
+    for (const [w, mat, y] of [
+      [casingW, casing, 0.135] as const,
+      [bandW, band, 0.145] as const,
+    ]) {
+      const geom = ribbon(line, w);
+      if (geom) {
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.position.y = y;
+        group.add(mesh);
+      }
+      // Pastilles aux sommets : le ruban reste continu dans les virages.
+      const joint = new THREE.CircleGeometry(w / 2, 14);
+      for (const [jx, jz] of line) {
+        const dot = new THREE.Mesh(joint, mat);
+        dot.rotation.x = -Math.PI / 2;
+        dot.position.set(jx, y, jz);
+        group.add(dot);
       }
     }
-    // Les arrets desservis par cette ligne, d'apres le `route_ref` des arrets.
+    const best = busLongest[run.line];
+    if (!best || pathLength(line) > pathLength(best)) busLongest[run.line] = line;
+  });
+  const busBadges: { x: number; z: number; ref: string; colour: number }[] = [];
+  busLines.forEach((line, li) => {
+    const group = busGroups[li];
+    if (!group.children.length) return;
+    const col = busMats[li].col;
+    // Les arrêts desservis par cette ligne, d'après le `route_ref` des arrêts.
     const served = (nb.busStops ?? [])
-      .filter((s) => s.line && route.ref && s.line.split(';').includes(route.ref))
+      .filter((s) => s.line && line.ref && s.line.split(';').includes(line.ref))
       .map((s) => s.name)
       .filter((n): n is string => !!n);
     addInfo(group, {
-      title: route.ref ? `Ligne de bus ${route.ref}` : 'Ligne de bus',
+      title: line.ref ? `Ligne de bus ${line.ref}` : 'Ligne de bus',
       colour: col,
       details: [
-        route.name,
+        line.name,
         served.length ? `Dessert : ${served.slice(0, 3).join(', ')}` : null,
-        'Tracé dans le voisinage · source OpenStreetMap',
+        'Les deux sens suivent le même tracé · source OpenStreetMap',
       ],
     });
+    const longest = busLongest[li];
     if (longest) {
       const mid = longest[Math.floor(longest.length / 2)];
-      const badge = makeLabel([route.ref ? `Bus ${route.ref}` : 'Bus'], {
-        bg: cssColour(col),
-        fg: '#ffffff',
-        worldH: 1.3,
-      });
-      badge.position.set(mid[0], 2.6, mid[1]);
-      scene.add(badge);
+      busBadges.push({ x: mid[0], z: mid[1], ref: line.ref ?? 'Bus', colour: col });
     }
   });
+  // Sur un axe très desservi, une pastille par ligne en empilerait une dizaine
+  // au même endroit : les numéros voisins sont réunis en une seule étiquette.
+  const BADGE_MERGE_M = 12;
+  const badgeGroups: { x: number; z: number; refs: string[]; colour: number }[] = [];
+  for (const b of busBadges) {
+    const near = badgeGroups.find((g) => Math.hypot(g.x - b.x, g.z - b.z) < BADGE_MERGE_M);
+    if (near) near.refs.push(b.ref);
+    else badgeGroups.push({ x: b.x, z: b.z, refs: [b.ref], colour: b.colour });
+  }
+  for (const g of badgeGroups) {
+    // Une seule ligne : sa couleur identifie la pastille. Plusieurs : une
+    // étiquette neutre, aucune couleur ne pouvant les représenter toutes.
+    const many = g.refs.length > 1;
+    const badge = makeLabel([`Bus ${g.refs.join(' · ')}`], {
+      bg: many ? 'rgba(23,26,34,0.92)' : cssColour(g.colour),
+      fg: many ? '#f4f6fa' : readableOn(g.colour),
+      worldH: 1.3,
+    });
+    badge.position.set(g.x, 2.6, g.z);
+    scene.add(badge);
+  }
 
   // --- Places de stationnement : orientées par leur empreinte OSM si elle
   // existe, sinon par le parking qui les contient, sinon par la voirie. ---
@@ -2796,8 +2869,12 @@ function legendObject(kind: LegendKind): THREE.Object3D | null {
         tactile: true,
         signTex: busSignTexture(null),
       });
-    case 'bus_route':
-      return legendStrip(ribbon(line, 0.62), 0x8b5cf6, 0.05);
+    case 'bus_route': {
+      const g = new THREE.Group();
+      g.add(legendStrip(ribbon(line, BUS_CASING_W), 0x3e2a6b, 0.04));
+      g.add(legendStrip(ribbon(line, BUS_BAND_W), 0x8b5cf6, 0.05));
+      return g;
+    }
     case 'parking-pmr':
     case 'parking': {
       const pmr = kind === 'parking-pmr';

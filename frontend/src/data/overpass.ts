@@ -223,6 +223,10 @@ export interface OsmBusStop {
 /**
  * Ligne de bus passant dans le voisinage. Le tracé est celui des voies de la
  * relation présentes dans l'emprise (le reste du parcours n'est pas téléchargé).
+ *
+ * OSM décrit une ligne par une relation et par sens de circulation, parfois
+ * dédoublée en variantes de service. Une même rue est donc citée par plusieurs
+ * relations : l'identifiant de voie permet de ne la dessiner qu'une fois.
  */
 export interface OsmBusRoute {
   id: string;
@@ -231,7 +235,7 @@ export interface OsmBusRoute {
   name: string | null;
   /** Couleur officielle (`colour`) si le réseau la publie. */
   colour: string | null;
-  segments: [number, number][][];
+  segments: { way: string; coords: [number, number][] }[];
 }
 
 /** Banc : on récupère au mieux la couleur et la présence de dossier (OSM). */
@@ -742,10 +746,10 @@ async function fetchNeighborhoodRaw(
         };
         out.busRoutes.push(current);
       } else if (el.type === 'way' && current && Array.isArray(el.geometry)) {
-        const seg = el.geometry
+        const coords = el.geometry
           .filter((g: any) => g && Number.isFinite(g.lon) && Number.isFinite(g.lat))
           .map((g: any) => [g.lon, g.lat] as [number, number]);
-        if (seg.length >= 2) current.segments.push(seg);
+        if (coords.length >= 2) current.segments.push({ way: `w${el.id}`, coords });
       }
     }
     // Une ligne sans tracé dans l'emprise n'a rien à montrer.
