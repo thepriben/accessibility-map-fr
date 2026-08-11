@@ -10,11 +10,14 @@ import {
   getMap,
   initMap,
   nearestPlaceToCenter,
+  resumeDataLoading,
+  setLoadProgressHandler,
 } from './map/mapView';
 import { autoEnter3D, closePlacePanel, openPlacePanel } from './neighborhood/placePanel';
 import { exitScene3D, isScene3DActive, prefetchScene3D } from './transition/transition';
 import { prefetchNeighborhood } from './data/overpass';
 import { hideLoader, showLoader } from './ui/loader';
+import { showNoWebGLNotice } from './ui/webgl';
 import { state } from './state';
 import { INITIAL_VIEW } from './config';
 import type { Place } from './types';
@@ -31,6 +34,33 @@ let lastAuto3dUuid: string | null = null;
 const statusEl = document.getElementById('status')!;
 function status(msg: string): void {
   statusEl.textContent = msg;
+}
+
+// Libelle courant du jeu de donnees, reaffiche apres les messages temporaires
+// (avancement du telechargement, passage en 3D...).
+let dataLabel = '';
+
+/**
+ * Avancement du socle. La carte est deja utilisable : l'attente se dit dans la
+ * barre d'etat, sans voile ni blocage, et disparait une fois tout charge.
+ */
+/** Rappel pose par la recherche : rejouer la requete affichee. */
+let replaySearch: (() => void) | null = null;
+
+function showLoadProgress(p: { loaded: number; total: number; done: boolean; names?: boolean }): void {
+  // Palier des noms : la carte etait deja complete, seule la recherche change.
+  if (p.names) {
+    replaySearch?.();
+    return;
+  }
+  if (p.done || p.loaded >= p.total) {
+    status(dataLabel);
+    replaySearch?.();
+    void refreshViews();
+    return;
+  }
+  const pct = Math.min(99, Math.round((p.loaded / Math.max(1, p.total)) * 100));
+  status(`${dataLabel} · chargement ${pct} %`);
 }
 
 // Dernier lieu selectionne : sert de cible au bouton swap 3D/2D de l'en-tete.
@@ -84,9 +114,19 @@ function normalizeText(s: string): string {
 }
 
 /** Recherche texte (nom / ville / code postal / activité) via worker ou memoire. */
+// Etat de la derniere recherche : des regions manquent-elles encore, et les noms
+// sont-ils tous arrives ? Les deux attentes ne disent pas la meme chose.
+let searchPartial = false;
+let searchNamesPartial = false;
+
 async function searchPlaces(q: string): Promise<Place[]> {
   const client = getClusterClient();
-  if (client) return (await client.search(q, SEARCH_LIMIT)).places;
+  if (client) {
+    const r = await client.search(q, SEARCH_LIMIT);
+    searchPartial = r.partial === true;
+    searchNamesPartial = r.namesPartial === true;
+    return r.places;
+  }
   const tokens = normalizeText(q).split(/\s+/).filter(Boolean);
   if (!tokens.length) return [];
   const out: Place[] = [];
@@ -141,9 +181,24 @@ function setupSearch(): void {
     }
   };
 
+  /**
+   * Les donnees descendent par tranches : une recherche lancee tot ne couvre
+   * qu'une partie du pays. Le dire evite de croire que le lieu n'existe pas, et
+   * la recherche se rejoue d'elle-meme une fois tout charge (voir onDataDone).
+   */
+  const notice = (): HTMLLIElement => {
+    const li = document.createElement('li');
+    li.className = 'search-note';
+    li.setAttribute('role', 'presentation');
+    li.textContent = searchPartial
+      ? 'Chargement des lieux en cours : la recherche s’étendra à toute la France dans quelques instants.'
+      : 'Chargement des noms en cours : la recherche par nom se complète encore (ville et code postal sont déjà complets).';
+    return li;
+  };
+
   const render = (): void => {
     results.innerHTML = '';
-    if (!items.length) {
+    if (!items.length && !searchPartial && !searchNamesPartial) {
       results.hidden = true;
       input.setAttribute('aria-expanded', 'false');
       return;
@@ -171,8 +226,24 @@ function setupSearch(): void {
       });
       results.appendChild(li);
     });
+    if (searchPartial || searchNamesPartial) results.appendChild(notice());
     results.hidden = false;
     input.setAttribute('aria-expanded', 'true');
+  };
+
+  // Palier de chargement franchi : la recherche affichee est rejouee pour
+  // couvrir ce qui vient d'arriver.
+  replaySearch = (): void => {
+    if (!results.hidden && lastQuery.length >= 2) {
+      void (async () => {
+        const my = (token += 1);
+        const found = await searchPlaces(lastQuery);
+        if (my !== token) return;
+        items = found;
+        active = -1;
+        render();
+      })();
+    }
   };
 
   input.addEventListener('input', () => {
@@ -290,6 +361,28 @@ function resetToHome(): void {
   status('');
 }
 
+/**
+ * Mode liste seule, faute de WebGL. La carte et la 3D reposent dessus toutes les
+ * deux : on retire leurs commandes plutot que de proposer des boutons qui
+ * echouent, et l'on explique la situation.
+ */
+function showNoWebGLMode(): void {
+  (document.getElementById('tab-list') as HTMLButtonElement | null)?.click();
+
+  const tabMap = document.getElementById('tab-map') as HTMLButtonElement | null;
+  if (tabMap) {
+    tabMap.disabled = true;
+    tabMap.title = 'Carte indisponible : accélération graphique (WebGL) inactive';
+  }
+  const swap = document.getElementById('toggle-3d');
+  if (swap) swap.hidden = true;
+
+  status('Carte indisponible sur ce navigateur - liste des lieux affichée.');
+  showNoWebGLNotice(() => {
+    (document.getElementById('tab-list') as HTMLButtonElement | null)?.click();
+  });
+}
+
 /** Bouton swap : bascule entre la vue 3D et la carte 2D. */
 function setupViewSwap(): void {
   const btn = document.getElementById('toggle-3d') as HTMLButtonElement | null;
@@ -336,10 +429,18 @@ async function handleDeepLink(): Promise<void> {
 
 async function boot(): Promise<void> {
   showLoader('Chargement des données…');
+  // Le voile ne doit tomber qu'une fois, que la carte arrive ou qu'elle echoue.
+  let veiled = true;
+  const reveal = (): void => {
+    if (!veiled) return;
+    veiled = false;
+    hideLoader();
+  };
   try {
     status('Chargement des données...');
     const cfg = await loadDataConfig();
     const fc = cfg.mode === 'geojson' ? await loadGeoJson(cfg) : null;
+    setLoadProgressHandler(showLoadProgress);
 
     const map = await initMap(cfg, fc, {
       onDetails: selectPlace,
@@ -352,11 +453,19 @@ async function boot(): Promise<void> {
       },
     });
 
+    // La carte est dessinee : on la montre tout de suite. Le reste de la mise en
+    // place (liste, recherche, raccourcis) se fait derriere, et le telechargement
+    // du reste des donnees ne demarre qu'ici pour ne pas lui voler la place.
+    dataLabel = cfg.label ? `${cfg.label} - ${cfg.count ?? dataCount()} lieux` : '';
+    status(dataLabel);
+    reveal();
+    resumeDataLoading();
+
     setupSearch();
     await refreshViews();
 
     // Au fil des deplacements/zoom : liste synchronisee sur l'emprise + bascule 3D.
-    map.on('moveend', () => {
+    map?.on('moveend', () => {
       void refreshViews();
       void maybeAutoEnter3D();
     });
@@ -370,14 +479,16 @@ async function boot(): Promise<void> {
 
     setupTabs();
     setupViewSwap();
+    // Sans WebGL, ni carte ni 3D : la liste devient la vue principale et l'on
+    // explique pourquoi, plutot que de laisser un cadre vide.
+    if (!map) showNoWebGLMode();
     document.getElementById('home-btn')?.addEventListener('click', resetToHome);
     void handleDeepLink();
-    status(cfg.label ? `${cfg.label} - ${cfg.count ?? dataCount()} lieux` : '');
   } catch (err) {
     console.error(err);
     status(`Erreur : ${(err as Error).message}`);
   } finally {
-    hideLoader();
+    reveal();
   }
 }
 

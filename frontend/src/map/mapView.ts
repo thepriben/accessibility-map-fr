@@ -6,8 +6,9 @@ import { getTheme } from '../theme';
 import { state } from '../state';
 import type { DataConfig, Place, PlaceProperties } from '../types';
 import { baseStyle } from './style';
+import { hasWebGL } from '../ui/webgl';
 import { showPlacePopup, type PopupHandlers } from './popup';
-import { ClusterClient } from '../data/clusterClient';
+import { ClusterClient, type LoadProgress } from '../data/clusterClient';
 import {
   CLUSTER_LAYER,
   POINT_LAYER,
@@ -48,12 +49,41 @@ export function dataCount(): number {
   return totalCount || state.allPlaces.length;
 }
 
-/** Initialise la carte et branche les donnees selon le mode (geojson/pmtiles). */
+let onLoadProgress: ((p: LoadProgress) => void) | null = null;
+
+/**
+ * Laisse le worker telecharger la suite des donnees. Appele une fois la carte
+ * visible, pour que le premier ecran ne soit pas retarde par le reste du jeu.
+ */
+export function resumeDataLoading(): void {
+  cluster?.resume();
+}
+
+/** Branche l'affichage de l'avancement du telechargement des donnees. */
+export function setLoadProgressHandler(fn: (p: LoadProgress) => void): void {
+  onLoadProgress = fn;
+}
+
+/**
+ * Initialise la carte et branche les donnees selon le mode (geojson/pmtiles).
+ *
+ * Renvoie null si le navigateur n'ouvre pas de contexte WebGL : les donnees sont
+ * alors quand meme chargees, pour que la liste accessible reste utilisable.
+ */
 export async function initMap(
   cfg: DataConfig,
   fc: GeoJSON.FeatureCollection | null,
   handlers: PopupHandlers
-): Promise<MlMap> {
+): Promise<MlMap | null> {
+  if (!hasWebGL()) {
+    if (cfg.mode === 'points') {
+      cluster = new ClusterClient();
+      cluster.onProgress = (p) => onLoadProgress?.(p);
+      totalCount = await cluster.init(asset(cfg.source));
+    }
+    return null;
+  }
+
   const protocol = new Protocol();
   maplibregl.addProtocol('pmtiles', protocol.tile);
 
@@ -76,17 +106,29 @@ export async function initMap(
     'top-right'
   );
 
+  // Le worker n'a pas besoin de la carte pour commencer a telecharger : il part
+  // tout de suite, en parallele du style et des premieres tuiles de fond.
+  let firstShard: Promise<number> | null = null;
+  if (cfg.mode === 'points') {
+    cluster = new ClusterClient();
+    // Le socle arrive par tranches : la carte s'affiche des la premiere, puis se
+    // complete. On redessine a chaque palier plutot que d'attendre la fin.
+    cluster.onGrown = () => void refreshClusters();
+    cluster.onProgress = (p) => onLoadProgress?.(p);
+    firstShard = cluster.init(asset(cfg.source));
+  }
+
   await new Promise<void>((resolve) => map!.on('load', () => resolve()));
 
-  // Voile hors-France (DOM-TOM inclus) : ajoute avant les grappes pour rester dessous.
-  await addFranceMask(map);
+  // Voile hors-France (DOM-TOM inclus). Il ne conditionne pas la lecture de la
+  // carte : on ne l'attend pas, il se posera sous les grappes en arrivant.
+  void addFranceMask(map);
 
   if (cfg.mode === 'points') {
     // Clustering cote client dans un worker : donnees hors du thread principal,
     // seules les grappes visibles reviennent (pas de crash memoire).
     addManagedClusterSource(map, { type: 'FeatureCollection', features: [] });
-    cluster = new ClusterClient();
-    totalCount = await cluster.init(asset(cfg.source));
+    totalCount = await firstShard!;
     wireInteractions(cfg, handlers);
     await refreshClusters();
     map.on('moveend', () => void refreshClusters());
@@ -211,7 +253,11 @@ function firstTilesLoaded(m: MlMap): Promise<void> {
       clearTimeout(timer);
       resolve();
     };
-    const timer = setTimeout(done, 8000); // filet de securite si un tile echoue
+    // Sur une connexion lente, attendre que TOUTES les tuiles de fond soient la
+    // retarde de plusieurs secondes un ecran deja utilisable : les grappes, elles,
+    // sont posees. Le fond se remplit ensuite sous les yeux, comme sur n'importe
+    // quelle carte.
+    const timer = setTimeout(done, 2000);
     m.on('idle', done);
   });
 }
@@ -234,12 +280,18 @@ async function addFranceMask(m: MlMap): Promise<void> {
     const mask = (await res.json()) as GeoJSON.GeoJSON;
     const { color, opacity } = maskPaint(getTheme());
     m.addSource('france-mask', { type: 'geojson', data: mask });
-    m.addLayer({
-      id: 'france-mask',
-      type: 'fill',
-      source: 'france-mask',
-      paint: { 'fill-color': color, 'fill-opacity': opacity },
-    });
+    // Le voile doit rester SOUS les grappes. Comme il arrive apres elles (pour ne
+    // pas retarder l'affichage), on l'insere explicitement avant leur calque.
+    const below = [CLUSTER_LAYER, POINT_LAYER].find((id) => m.getLayer(id));
+    m.addLayer(
+      {
+        id: 'france-mask',
+        type: 'fill',
+        source: 'france-mask',
+        paint: { 'fill-color': color, 'fill-opacity': opacity },
+      },
+      below
+    );
   } catch {
     /* masque optionnel : on ignore si indisponible */
   }
@@ -304,11 +356,16 @@ function wireInteractions(cfg: DataConfig, handlers: PopupHandlers): void {
     }
   });
 
-  map.on('click', POINT_LAYER, (e) => {
+  map.on('click', POINT_LAYER, async (e) => {
     const feat = e.features?.[0];
     if (!feat) return;
     const [lng, lat] = (feat.geometry as GeoJSON.Point).coordinates as [number, number];
-    const place: Place = { properties: feat.properties as unknown as PlaceProperties, lng, lat };
+    let place: Place = { properties: feat.properties as unknown as PlaceProperties, lng, lat };
+    // Les noms voyagent a part et peuvent n'etre pas encore arrives : on va
+    // chercher la fiche complete au moment du clic, pas au moment du dessin.
+    if (!place.properties.nom && place.properties.srcIndex != null && cluster) {
+      place = (await cluster.place(Number(place.properties.srcIndex))) ?? place;
+    }
     showPlacePopup(map!, place, handlers);
     // Apres l'ouverture du popup (qui retire l'eventuel popup precedent et
     // declenche son 'close' -> efface le halo) : on pose le halo sur ce lieu.
