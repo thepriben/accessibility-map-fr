@@ -8,6 +8,8 @@
       name="description"
       content="Carte collaborative de l'accessibilité des lieux publics en France, à partir des données Acceslibre. Vue carte et vue liste accessible."
     />
+    <!-- L'onglet reçoit une réduction du logo (épingle seule) : voir favicon.svg. -->
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
@@ -15,6 +17,8 @@
 
     <header class="app-header">
       <button id="home-btn" class="app-title" type="button" title="Revenir à l'accueil" aria-label="Carte d'accessibilité — revenir à l'accueil">
+        <!-- alt vide : le bouton porte deja son intitule, la vignette est decorative. -->
+        <img class="app-logo" src="./logo.svg" alt="" width="27" height="27" />
         Carte d'accessibilité
       </button>
 

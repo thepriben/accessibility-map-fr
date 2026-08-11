@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="titre">
+  <title id="titre">Carte d'accessibilit&#233;</title>
+  <!--
+    Une epingle plantee sur une dalle vue en volume : le site repere un lieu sur
+    la carte, puis en montre les cent derniers metres en 3D. Les teintes sont
+    celles de l'interface (encre #4a4438, or #c9a855) et la pastille reprend
+    exactement l'orange du batiment vise dans la scene 3D (#ef8b4e).
+
+    Aucun texte, aucun degrade, aucun contour : le dessin se reduit sans bavure
+    et reste lisible a 16 px.
+  -->
+
+  <!--
+    La dalle se construit en trois couches qui se recouvrent, et non en facettes
+    juxtaposees : deux polygones qui partagent une arete laissent passer un
+    lisere clair entre eux des que la taille grandit (lissage des bords).
+    D'abord la silhouette entiere dans le ton d'ombre, puis la face eclairee,
+    puis le dessus par-dessus tout.
+  -->
+  <path fill="#8f6a19" d="M4 44 32 30l28 14v3.6L32 62 4 47.6Z"/>
+  <path fill="#b0821f" d="M4 44l28 14v4L4 47.6Z"/>
+  <path fill="#c9a855" d="M32 30 60 44 32 58 4 44Z"/>
+
+  <!-- Ombre portee : elle plante l'epingle sur la dalle au lieu de la laisser flotter. -->
+  <ellipse cx="32" cy="41.2" rx="6.4" ry="2.6" fill="#8f6a19" opacity=".3"/>
+
+  <!--
+    Tete circulaire et flancs tangents au cercle : la jonction ne casse pas.
+    Cercle de centre (32 ; 15,5) et de rayon 13,6 ; pointe en (32 ; 40,5), soit
+    juste dans l'ombre pour que le contact avec le sol se lise.
+  -->
+  <path fill="#4a4438" d="M20.59 22.9 32 40.5l11.41-17.6A13.6 13.6 0 1 0 20.59 22.9Z"/>
+  <circle cx="32" cy="15.5" r="5.2" fill="#ef8b4e"/>
+</svg>

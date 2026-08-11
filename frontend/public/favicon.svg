@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="titre">
+  <title id="titre">Carte d'accessibilit&#233;</title>
+  <!--
+    Reduction de logo.svg pour l'onglet du navigateur. A 16 px, la dalle et
+    l'epingle se disputent la place et il ne reste qu'une tache : on ne garde
+    donc que l'epingle, agrandie au cadre. Meme dessin, meme palette.
+
+    Sur un onglet sombre l'encre disparaitrait ; la teinte suit alors le theme
+    du systeme. C'est sans risque ici, ce fichier ne sert que de favicon
+    (l'en-tete du site, lui, reste clair en toute circonstance).
+  -->
+  <style>
+    .corps { fill: #4a4438 }
+    @media (prefers-color-scheme: dark) { .corps { fill: #f0e9da } }
+  </style>
+  <path class="corps" d="M15 34.5 32 62l17-27.5A20 20 0 1 0 15 34.5Z"/>
+  <circle cx="32" cy="24" r="7.6" fill="#ef8b4e"/>
+</svg>
