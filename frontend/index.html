@@ -103,6 +103,66 @@
       </div>
     </div>
 
+    <!--
+      Filet de securite au demarrage. GitHub Pages sert cet index.html avec un
+      cache de dix minutes, mais remplace tous les autres fichiers a chaque
+      deploiement et leurs noms portent une empreinte : une page rouverte juste
+      apres une publication reclame un script qui n'existe plus, et il ne reste
+      que cette coquille (en-tete, legende, aucune carte).
+
+      Ce script-ci fait partie du HTML : il tourne meme dans ce cas. S'il ne voit
+      rien demarrer, il compare la version publiee a la sienne et ne recharge que
+      si elle a change - un reseau lent ne declenche donc rien. Une seule
+      tentative par onglet, pour ecarter toute boucle.
+    -->
+    <script>
+      (function () {
+        var CLE = 'carte-a11y:rechargement';
+        /** sessionStorage peut etre interdit (navigation privee stricte). */
+        function memo(action, valeur) {
+          try {
+            return action === 'lire'
+              ? sessionStorage.getItem(CLE)
+              : sessionStorage[action === 'poser' ? 'setItem' : 'removeItem'](CLE, valeur);
+          } catch (e) {
+            return null;
+          }
+        }
+        /**
+         * Adresse du script d'entree annoncee par du HTML brut. L'ordre des
+         * attributs n'est pas garanti (Vite glisse `crossorigin` entre `type` et
+         * `src`) : on inspecte chaque balise plutot qu'une forme figee.
+         */
+        function entreeDeclaree(html) {
+          var balises = /<script\b([^>]*)>/gi;
+          for (var b = balises.exec(html); b !== null; b = balises.exec(html)) {
+            if (!/type\s*=\s*"module"/i.test(b[1])) continue;
+            var src = /src\s*=\s*"([^"]+)"/i.exec(b[1]);
+            if (src) return src[1];
+          }
+          return null;
+        }
+        setTimeout(function () {
+          if (window.__appStarted) return memo('oublier');
+          if (memo('lire')) return; // deja tente : on n'insiste pas
+          var entree = document.querySelector('script[type="module"][src]');
+          entree = entree && entree.getAttribute('src');
+          if (!entree) return;
+          fetch(location.pathname, { cache: 'no-store' })
+            .then(function (r) {
+              return r.ok ? r.text() : null;
+            })
+            .then(function (html) {
+              var publiee = html && entreeDeclaree(html);
+              if (!publiee || publiee === entree) return; // meme version : la lenteur vient d'ailleurs
+              memo('poser', '1');
+              location.reload();
+            })
+            .catch(function () {});
+        }, 8000);
+      })();
+    </script>
+
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

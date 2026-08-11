@@ -381,5 +381,9 @@ async function boot(): Promise<void> {
   }
 }
 
+// Le filet de securite d'index.html attend ce drapeau : sans lui, il en deduit
+// que le script n'a pas pu se charger et recharge la page une fois.
+(window as unknown as { __appStarted?: boolean }).__appStarted = true;
+
 setupTabs();
 void boot();

@@ -554,6 +554,23 @@ a { color: var(--focus); }
 }
 .status:empty { display: none; }
 
+/* Bandeau de nouvelle version : au-dessus du spinner, il annonce une panne dont
+   le seul remede est un rechargement. */
+.update-notice {
+  /* Sous l'en-tete : le bandeau ne doit pas recouvrir la recherche. */
+  position: fixed; left: 50%; top: 60px; transform: translateX(-50%); z-index: 70;
+  display: flex; align-items: center; gap: 12px;
+  background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 14px; box-shadow: var(--shadow);
+  font-size: 0.88rem; max-width: min(92vw, 560px);
+}
+.update-notice-btn {
+  flex: none; border: 0; border-radius: 8px; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink);
+  padding: 7px 12px; font-size: 0.85rem; font-weight: 600;
+}
+
 /* Indicateur de chargement (spinner) */
 .loader {
   position: fixed; inset: 0; z-index: 60;

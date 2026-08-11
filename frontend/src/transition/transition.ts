@@ -2,6 +2,7 @@ import type { NeighborhoodData } from '../data/overpass';
 import { getTheme } from '../theme';
 import type { Place, StreetPhoto } from '../types';
 import { hideFlatFallback, isNeighborhoodEmpty, showFlatFallback } from './flatFallback';
+import { noticeIfStale } from '../ui/staleBuild';
 import type { LegendKind } from '../three/scene3d';
 import { MAP_ATTRIBUTION } from '../config';
 
@@ -36,6 +37,12 @@ async function loadScene(): Promise<SceneMod | null> {
     })
     .catch((err) => {
       console.warn('Module 3D (Three.js) indisponible', err);
+      // Une coupure passagere ne doit pas condamner la session : on oublie la
+      // tentative pour qu'un nouveau clic retelecharge le module.
+      loading = null;
+      // Cause la plus courante : un deploiement a eu lieu depuis l'ouverture de
+      // l'onglet et le fichier demande n'existe plus.
+      void noticeIfStale();
       return null;
     });
   return loading;
