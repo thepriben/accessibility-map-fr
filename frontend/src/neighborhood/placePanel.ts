@@ -17,6 +17,7 @@ function emptyNeighborhood(place: Place): NeighborhoodData {
     buildings: [],
     furniture: [],
     pois: [],
+    areas: [],
     paths: [],
     parking: [],
     parkingAreas: [],

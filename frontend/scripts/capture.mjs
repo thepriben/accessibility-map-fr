@@ -129,6 +129,18 @@ try {
     await sleep(900);
   }
 
+  // --eval <js> : inspection de la scene apres coup (compter des objets, relever
+  // une couleur au sol...). Le resultat est imprime avec les journaux.
+  const evalArg = process.argv.indexOf('--eval');
+  if (evalArg > 0) {
+    const r = await call('Runtime.evaluate', {
+      expression: process.argv[evalArg + 1],
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    logs.push(`eval: ${JSON.stringify(r.result.value ?? r.result.description ?? null)}`);
+  }
+
   const shot = await call('Page.captureScreenshot', { format: 'png' });
   writeFileSync(out, Buffer.from(shot.data, 'base64'));
   console.log(`titre: ${title}`);

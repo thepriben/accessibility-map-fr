@@ -73,6 +73,21 @@ export interface OsmBuilding {
   height: number | null;
   wikidata: string | null;
   name: string | null;
+  /**
+   * Valeur du tag `building` : `yes` la plupart du temps, mais aussi `roof`
+   * (couverture sans murs), `church`, `retail`, `industrial`… Elle renseigne à
+   * la fois la forme et la hauteur d'étage plausible : une halle n'a pas des
+   * niveaux de 3 m.
+   */
+  kind: string | null;
+  /**
+   * `wall=no` : structure couverte mais ouverte (halle, préau, auvent de
+   * station). La dessiner comme un volume plein masquerait justement le
+   * passage qu'elle abrite.
+   */
+  wall: boolean | null;
+  /** `min_height` / `building:min_level` : hauteur du dessous d'une couverture. */
+  minHeight: number | null;
 }
 
 export type FurnitureKind =
@@ -108,14 +123,42 @@ export interface OsmFurniture {
   name?: string | null;
 }
 
-/** Lieux d'accueil (POI) : hotels, restaurants, cafes, communautaires, cultuels. */
-export type PoiKind = 'hotel' | 'restaurant' | 'cafe' | 'community' | 'worship';
+/**
+ * Lieu où l'on peut demander de l'aide : un commerce ouvert au public rend un
+ * service que la carte ne rend pas — demander où est l'entrée accessible,
+ * appeler, s'asseoir, attendre à l'abri. C'est à ce titre qu'ils figurent dans
+ * la scène, et non comme annuaire.
+ */
+export type PoiKind =
+  | 'hotel'
+  | 'restaurant'
+  | 'cafe'
+  | 'bar'
+  | 'pharmacy'
+  | 'community'
+  | 'worship';
 
 export interface OsmPoi {
   id: string;
   kind: PoiKind;
   lng: number;
   lat: number;
+  name: string | null;
+  /** Accessibilité fauteuil déclarée (`wheelchair`). */
+  wheelchair?: string | null;
+}
+
+/**
+ * Surface d'agrément ou d'eau : pelouse, square, bassin, terrain de jeu. Sans
+ * elles, un quartier vert se réduisait à du bitume gris, et l'on perdait des
+ * repères qui comptent sur place (« l'entrée est après le square »).
+ */
+export type AreaKind = 'park' | 'grass' | 'wood' | 'water' | 'pitch' | 'playground';
+
+export interface OsmArea {
+  id: string;
+  kind: AreaKind;
+  ring: [number, number][];
   name: string | null;
 }
 
@@ -125,6 +168,11 @@ export interface OsmPath {
   coords: [number, number][];
   /** Largeur indicative (m) pour le rendu, surtout utile pour les routes. */
   width?: number;
+  /**
+   * `area=yes` : le tracé délimite une surface (place, parvis, esplanade) et non
+   * un cheminement. En ruban, une place se réduisait à un liseré autour du vide.
+   */
+  area?: boolean | null;
   /** Revêtement OSM (asphalt, pavé, gravier…) : confort de roulage. */
   surface?: string | null;
   /** Pente OSM (`incline`) : `up`, `down` ou pourcentage. */
@@ -259,6 +307,7 @@ export interface NeighborhoodData {
   buildings: OsmBuilding[];
   furniture: OsmFurniture[];
   pois: OsmPoi[];
+  areas: OsmArea[];
   paths: OsmPath[];
   parking: OsmParking[];
   parkingAreas: OsmParkingArea[];
@@ -468,6 +517,13 @@ async function fetchNeighborhoodRaw(
       node["amenity"="parking_space"](${b});
       way["amenity"="parking_space"](${b});
       way["amenity"="parking"](${b});
+      way["leisure"~"^(park|garden|pitch|playground)$"](${b});
+      way["landuse"~"^(grass|forest|meadow|village_green)$"](${b});
+      way["natural"~"^(water|wood|scrub|grassland)$"](${b});
+      node["amenity"~"^(restaurant|cafe|bar|pub|fast_food|pharmacy|community_centre|social_centre|place_of_worship)$"](${b});
+      way["amenity"~"^(restaurant|cafe|bar|pub|fast_food|pharmacy|community_centre|social_centre|place_of_worship)$"](${b});
+      node["tourism"="hotel"](${b});
+      way["tourism"="hotel"](${b});
       node["natural"="tree"](${b});
       way["natural"="tree_row"](${b});
       node["emergency"="fire_hydrant"](${b});
@@ -509,6 +565,7 @@ async function fetchNeighborhoodRaw(
     buildings: [],
     furniture: [],
     pois: [],
+    areas: [],
     paths: [],
     parking: [],
     parkingAreas: [],
@@ -530,12 +587,29 @@ async function fetchNeighborhoodRaw(
 
     // Batiments (way avec footprint).
     if (el.type === 'way' && tags.building && Array.isArray(el.geometry)) {
+      const minLevel = toNum(tags['building:min_level']);
       out.buildings.push({
         id: `w${el.id}`,
         ring: el.geometry.map((g: any) => [g.lon, g.lat] as [number, number]),
         levels: toNum(tags['building:levels']),
         height: toNum(tags.height),
         wikidata: tags.wikidata || null,
+        name: tags.name || null,
+        kind: tags.building,
+        // `wall=no` est la seule forme répandue ; on ne conclut rien de son
+        // absence, d'où le null plutôt qu'un true par défaut.
+        wall: tags.wall === 'no' ? false : tags.wall === 'yes' ? true : null,
+        minHeight: toNum(tags.min_height) ?? (minLevel != null ? minLevel * 3 : null),
+      });
+    }
+
+    // Surfaces d'agrément et plans d'eau (ways fermés).
+    const area = areaKind(tags);
+    if (el.type === 'way' && area && Array.isArray(el.geometry) && el.geometry.length >= 4) {
+      out.areas.push({
+        id: `w${el.id}`,
+        kind: area,
+        ring: el.geometry.map((g: any) => [g.lon, g.lat] as [number, number]),
         name: tags.name || null,
       });
     }
@@ -569,7 +643,14 @@ async function fetchNeighborhoodRaw(
     // POI d'accueil (node ou way : restaurant, hotel, culte peuvent etre des ways).
     const poi = poiKind(tags);
     if (poi && pos) {
-      out.pois.push({ id: eid, kind: poi, lng: pos[0], lat: pos[1], name: tags.name || null });
+      out.pois.push({
+        id: eid,
+        kind: poi,
+        lng: pos[0],
+        lat: pos[1],
+        name: tags.name || null,
+        wheelchair: tags.wheelchair || null,
+      });
     }
 
     // Place de stationnement, PMR ou non. Pour un way, on conserve l'empreinte :
@@ -713,6 +794,7 @@ async function fetchNeighborhoodRaw(
           id: `w${el.id}`,
           kind,
           width,
+          area: tags.area === 'yes' ? true : null,
           coords: el.geometry.map((g: any) => [g.lon, g.lat] as [number, number]),
           surface: tags.surface || null,
           incline: tags.incline || null,
@@ -819,9 +901,33 @@ function furnitureKind(tags: Record<string, string>): FurnitureKind | null {
 
 function poiKind(tags: Record<string, string>): PoiKind | null {
   if (tags.tourism === 'hotel') return 'hotel';
-  if (tags.amenity === 'restaurant') return 'restaurant';
-  if (tags.amenity === 'cafe' || tags.amenity === 'bar' || tags.amenity === 'pub') return 'cafe';
+  if (tags.amenity === 'restaurant' || tags.amenity === 'fast_food') return 'restaurant';
+  if (tags.amenity === 'cafe') return 'cafe';
+  if (tags.amenity === 'bar' || tags.amenity === 'pub') return 'bar';
+  if (tags.amenity === 'pharmacy') return 'pharmacy';
   if (tags.amenity === 'community_centre' || tags.amenity === 'social_centre') return 'community';
   if (tags.amenity === 'place_of_worship') return 'worship';
+  return null;
+}
+
+/**
+ * Surface d'agrément ou d'eau. Les valeurs sont regroupées par aspect, seul
+ * critère utile ici : un `landuse=meadow` et un `leisure=garden` se dessinent
+ * de la même façon.
+ */
+function areaKind(tags: Record<string, string>): AreaKind | null {
+  if (tags.leisure === 'park' || tags.leisure === 'garden') return 'park';
+  if (tags.leisure === 'playground') return 'playground';
+  if (tags.leisure === 'pitch') return 'pitch';
+  if (tags.natural === 'water') return 'water';
+  if (tags.natural === 'wood' || tags.landuse === 'forest') return 'wood';
+  if (
+    tags.landuse === 'grass' ||
+    tags.landuse === 'meadow' ||
+    tags.landuse === 'village_green' ||
+    tags.natural === 'scrub' ||
+    tags.natural === 'grassland'
+  )
+    return 'grass';
   return null;
 }

@@ -171,7 +171,13 @@ const SNAP = 0.5;
 const key = (x: number, y: number): string =>
   `${Math.round(x / SNAP)}|${Math.round(y / SNAP)}`;
 
-interface Graph {
+/**
+ * Réseau piéton prêt à être parcouru. Le graphe se construit une fois pour
+ * toute la scène : chercher la meilleure porte depuis deux arrivées demandait
+ * sinon de le reconstruire à chaque essai, sur le chemin critique de l'entrée
+ * en 3D.
+ */
+export interface Graph {
   coords: P2[];
   adj: { to: number; w: number }[][];
 }
@@ -222,10 +228,14 @@ function nearestNode(g: Graph, p: P2): { id: number; dist: number } | null {
 }
 
 /**
- * Dijkstra. Le voisinage tient en quelques milliers de sommets : un balayage
- * linéaire du plus proche non visité suffit, et évite d'embarquer un tas.
+ * Dijkstra depuis un départ : distances de tous les sommets et prédécesseurs
+ * pour remonter les chemins. Un seul parcours suffit alors, quel que soit le
+ * nombre d'arrivées à comparer.
+ *
+ * Le voisinage tient en quelques milliers de sommets : un balayage linéaire du
+ * plus proche non visité suffit, et évite d'embarquer un tas.
  */
-function dijkstra(g: Graph, start: number, goal: number): number[] | null {
+function dijkstraFrom(g: Graph, start: number): { dist: Float64Array; prev: Int32Array } {
   const n = g.coords.length;
   const dist = new Float64Array(n).fill(Infinity);
   const prev = new Int32Array(n).fill(-1);
@@ -241,8 +251,7 @@ function dijkstra(g: Graph, start: number, goal: number): number[] | null {
         u = i;
       }
     }
-    if (u < 0) return null;
-    if (u === goal) break;
+    if (u < 0) break;
     done[u] = 1;
     for (const e of g.adj[u]) {
       const alt = dist[u] + e.w;
@@ -252,10 +261,13 @@ function dijkstra(g: Graph, start: number, goal: number): number[] | null {
       }
     }
   }
+  return { dist, prev };
+}
 
-  const path: number[] = [];
-  for (let v = goal; v >= 0; v = prev[v]) path.push(v);
-  return path.reverse();
+/** Prépare le réseau piéton pour plusieurs trajets. Null s'il est inexploitable. */
+export function prepareNetwork(lines: RouteLine[]): Graph | null {
+  const usable = lines.filter((l) => l.points.length >= 2);
+  return usable.length ? buildGraph(usable) : null;
 }
 
 /**
@@ -264,31 +276,74 @@ function dijkstra(g: Graph, start: number, goal: number): number[] | null {
  * au-delà, rattacher le trajet au cheminement le plus proche raconterait
  * n'importe quoi, et on renvoie une liaison directe.
  */
-export function findRoute(
-  lines: RouteLine[],
+export function findRoute(lines: RouteLine[], from: P2, to: P2, snap = 35): RouteResult {
+  const net = prepareNetwork(lines);
+  return routeToAny(net, from, [to], snap).result;
+}
+
+/**
+ * Meilleur trajet vers l'une des arrivées proposées.
+ *
+ * Un lieu a souvent plusieurs entrées, et la plus proche n'est pas la même selon
+ * qu'on arrive en voiture ou en bus : c'est au calcul de trancher, pas à un
+ * classement établi d'avance. `index` dit laquelle a été retenue.
+ */
+export function routeToAny(
+  net: Graph | null,
   from: P2,
-  to: P2,
+  tos: P2[],
   snap = 35
-): RouteResult {
-  const direct = (): RouteResult => ({
-    points: [from, to],
-    length: Math.hypot(to[0] - from[0], to[1] - from[1]),
-    direct: true,
+): { result: RouteResult; index: number } {
+  // Repli : la ligne droite vers l'arrivée la plus proche. Elle est annoncée
+  // comme telle, un trait qui traverse les murs ne devant pas passer pour un
+  // itinéraire.
+  const straight = (): { result: RouteResult; index: number } => {
+    let index = 0;
+    let best = Infinity;
+    tos.forEach((t, i) => {
+      const d = Math.hypot(t[0] - from[0], t[1] - from[1]);
+      if (d < best) {
+        best = d;
+        index = i;
+      }
+    });
+    return {
+      result: { points: [from, tos[index]], length: best, direct: true },
+      index,
+    };
+  };
+
+  if (!tos.length) return { result: { points: [from], length: 0, direct: true }, index: -1 };
+  if (!net) return straight();
+
+  const a = nearestNode(net, from);
+  if (!a || a.dist > snap) return straight();
+  const { dist, prev } = dijkstraFrom(net, a.id);
+
+  let bestIndex = -1;
+  let bestNode = -1;
+  let bestCost = Infinity;
+  tos.forEach((to, i) => {
+    const b = nearestNode(net, to);
+    if (!b || b.dist > snap || b.id === a.id) return;
+    // L'amorce finale compte dans la comparaison : une porte à trente mètres du
+    // trottoir ne doit pas gagner sur celle qui l'ouvre dessus.
+    const cost = dist[b.id] + b.dist;
+    if (cost < bestCost) {
+      bestCost = cost;
+      bestIndex = i;
+      bestNode = b.id;
+    }
   });
+  if (bestIndex < 0 || !Number.isFinite(bestCost)) return straight();
 
-  const usable = lines.filter((l) => l.points.length >= 2);
-  if (!usable.length) return direct();
+  const ids: number[] = [];
+  for (let v = bestNode; v >= 0; v = prev[v]) ids.push(v);
+  ids.reverse();
+  if (ids.length < 2) return straight();
 
-  const g = buildGraph(usable);
-  const a = nearestNode(g, from);
-  const b = nearestNode(g, to);
-  if (!a || !b || a.dist > snap || b.dist > snap || a.id === b.id) return direct();
-
-  const ids = dijkstra(g, a.id, b.id);
-  if (!ids || ids.length < 2) return direct();
-
-  // Les amorces relient le point réel au réseau : sans elles, le trajet
+  // Les amorces relient les points réels au réseau : sans elles, le trajet
   // démarrerait à côté de la place de stationnement.
-  const points: P2[] = [from, ...ids.map((i) => g.coords[i]), to];
-  return { points, length: pathLength(points), direct: false };
+  const points: P2[] = [from, ...ids.map((i) => net.coords[i]), tos[bestIndex]];
+  return { result: { points, length: pathLength(points), direct: false }, index: bestIndex };
 }

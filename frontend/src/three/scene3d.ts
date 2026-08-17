@@ -1,18 +1,21 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import type {
+  AreaKind,
   NeighborhoodData,
   OsmBuilding,
   OsmEntrance,
   OsmFurniture,
   OsmPath,
+  PoiKind,
 } from '../data/overpass';
 import { busPlacements, dropTwinRuns, mergeBusRoutes, type BusLine, type BusRun } from './bus';
 import { attachHover, tagInfo, type HoverHandle, type SceneInfo } from './hover';
 import {
-  findRoute,
   frontDoorGuess,
   measureWalk,
+  prepareNetwork,
+  routeToAny,
   sampleWalk,
   type RouteLine,
   type WalkPath,
@@ -225,10 +228,176 @@ function projector(originLng: number, originLat: number): (lng: number, lat: num
   return (lng, lat) => [(lng - originLng) * mPerDegLng, -(lat - originLat) * M_PER_DEG_LAT];
 }
 
-/** Hauteur d'un batiment : hauteur explicite, sinon etages x 3 m, sinon defaut. */
-function buildingHeight(b: OsmBuilding): number {
-  const h = b.height ?? (b.levels != null ? b.levels * 3 : null) ?? 9;
-  return Math.min(Math.max(h, 3), 200);
+/** Aire d'une empreinte locale (m²), formule du lacet. */
+function ringArea(ring: [number, number][]): number {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+  }
+  return Math.abs(a) / 2;
+}
+
+/**
+ * Points répartis le long d'un contour fermé, un aux angles et un tous les
+ * `step` mètres sur les longs côtés. Sert à poser les poteaux d'une halle : aux
+ * angles parce que la charpente y retombe toujours, entre eux pour ne pas
+ * laisser une portée de trente mètres sans appui.
+ */
+function samplePerimeter(ring: [number, number][], step: number, max = 40): [number, number][] {
+  const pts: [number, number][] = [];
+  for (let i = 0; i < ring.length && pts.length < max; i += 1) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    pts.push(a);
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const n = Math.floor(len / step);
+    for (let k = 1; k <= n && pts.length < max; k += 1) {
+      const t = (k * step) / len;
+      if (t >= 1) break;
+      pts.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return pts;
+}
+
+/** Médiane d'une liste non vide (l'ordre d'entrée est quelconque). */
+function median(values: number[]): number {
+  const v = [...values].sort((a, b) => a - b);
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
+/** Vrai si deux empreintes se touchent (mitoyennes) à `tol` près. */
+function ringsAdjacent(a: [number, number][], b: [number, number][], tol: number): boolean {
+  for (const [ax, az] of a) {
+    for (const [bx, bz] of b) {
+      if (Math.hypot(ax - bx, az - bz) <= tol) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Ce qu'il faut construire pour un bâtiment donné.
+ *
+ *  - `canopy` : couvert mais ouvert (`building=roof`, carport, auvent). Un
+ *    volume plein le représenterait à contresens : c'est un abri qu'on traverse,
+ *    et sous une halle de marché il y a précisément ce qu'on vient voir.
+ *  - `light` : `wall=no`. En France ce tag vient de l'import du cadastre, qui
+ *    distingue les « bâtiments légers » — abri de jardin, appentis, véranda,
+ *    préau. Mesuré autour du Grand Marché de Vichy : 25 empreintes de 14 m² en
+ *    médiane, la plus grande à 84 m². Faute de les reconnaître, la scène les
+ *    dressait à la hauteur par défaut, semant des tours de 9 m sur 4 m de côté
+ *    au fond des cours.
+ *  - `solid` : tout le reste.
+ */
+type BuildingForm = 'solid' | 'canopy' | 'light';
+
+function buildingForm(b: OsmBuilding): BuildingForm {
+  if (b.kind === 'roof' || b.kind === 'carport' || b.kind === 'canopy') return 'canopy';
+  if (b.wall === false) return 'light';
+  return 'solid';
+}
+
+// Usages dont un seul niveau est haut par nature : une halle, une église ou un
+// hangar n'ont pas un plafond à 3 m.
+const TALL_SINGLE_LEVEL = new Set([
+  'church', 'chapel', 'cathedral', 'mosque', 'synagogue', 'temple',
+  'retail', 'supermarket', 'commercial', 'industrial', 'warehouse', 'hangar',
+  'sports_hall', 'sports_centre', 'stadium', 'train_station', 'transportation',
+  'civic', 'public', 'government', 'hospital', 'market', 'greenhouse', 'hall',
+]);
+
+interface BuildingShape {
+  b: OsmBuilding;
+  /** Empreinte projetée en mètres, telle qu'elle sera dessinée. */
+  ring: [number, number][];
+  area: number;
+}
+
+/**
+ * Hauteurs des bâtiments du voisinage.
+ *
+ * `height` est rare dans OSM, `building:levels` un peu moins ; le reste doit
+ * être déduit, et un chiffre fixe se trahit tout de suite : un niveau valait 3 m
+ * partout, si bien qu'une halle de marché ou une église à un seul niveau
+ * s'écrasait en galette de 3 m au milieu d'immeubles de six étages.
+ *
+ * D'où trois lectures du contexte, de la plus fiable à la plus indirecte :
+ *  - la hauteur d'étage se mesure sur place, chez les bâtiments qui portent à la
+ *    fois `height` et `levels` (3 m en lotissement, 4 m et plus en centre
+ *    ancien) ;
+ *  - l'usage et l'emprise disent le reste : un seul niveau sur 800 m² est une
+ *    halle, sur 30 m² un garage ;
+ *  - la mitoyenneté sert de garde-fou : un rez-de-chaussée commercial saisi
+ *    comme bâtiment à part, encastré dans un immeuble, ne peut pas être un
+ *    pavillon isolé de 3 m.
+ *
+ * Aucune de ces règles n'invente de niveau : elles ne font que choisir une
+ * hauteur plausible là où la donnée manque, ce que la scène assume.
+ */
+function resolveHeights(shapes: BuildingShape[]): number[] {
+  const ratios = shapes
+    .filter((s) => s.b.height != null && s.b.levels != null && s.b.levels > 0)
+    .map((s) => s.b.height! / s.b.levels!)
+    .filter((r) => r >= 2.4 && r <= 6.5);
+  const storey = ratios.length ? Math.min(Math.max(median(ratios), 2.7), 5) : 3.1;
+
+  // Hauteurs sûres du quartier : servent de référence aux bâtiments muets.
+  const known = shapes
+    .filter((s) => s.b.height != null || s.b.levels != null)
+    .map((s) => s.b.height ?? s.b.levels! * storey)
+    .filter((h) => h >= 2 && h <= 200);
+  const townHeight = known.length ? median(known) : 9;
+
+  return shapes.map((s, i) => {
+    const { b, area } = s;
+    const form = buildingForm(b);
+    if (b.height != null) {
+      // Une construction légère reste basse : un `height` aberrant hérité d'un
+      // import ne doit pas en faire un immeuble.
+      const cap = form === 'light' ? 4 : 200;
+      return Math.min(Math.max(b.height, 2.2), cap);
+    }
+
+    // Bâtiment léger : un seul niveau par nature, un peu plus haut s'il est
+    // grand (un préau de 80 m² dépasse l'abri de jardin de 6 m²).
+    if (form === 'light') return area >= 45 ? 3 : area >= 15 ? 2.7 : 2.4;
+
+    const tall = TALL_SINGLE_LEVEL.has(b.kind ?? '');
+    if (b.levels != null && b.levels > 0) {
+      if (b.levels > 1) return Math.min(b.levels * storey, 200);
+
+      // Un seul niveau : c'est ici que le contexte décide.
+      let h = storey;
+      if (tall || area >= 600) h = Math.max(storey * 1.9, 6);
+      else if (area >= 250) h = storey * 1.45;
+
+      // Mitoyens nettement plus hauts : le niveau saisi est presque toujours un
+      // rez-de-chaussée détaché du volume qui le porte. On le relève sans jamais
+      // dépasser ses voisins, pour ne pas fabriquer un immeuble à leur place.
+      const neighbours = shapes
+        .filter((o, j) => j !== i && ringsAdjacent(s.ring, o.ring, 1.5))
+        .map((o) => o.b.height ?? (o.b.levels != null ? o.b.levels * storey : null))
+        .filter((x): x is number => x != null);
+      if (neighbours.length) {
+        const around = median(neighbours);
+        if (around >= 7) h = Math.max(h, Math.min(around * 0.55, around));
+      }
+      return Math.min(h, 200);
+    }
+
+    // Ni hauteur ni niveaux : c'est le cas le plus fréquent, et de loin. On
+    // s'aligne sur le quartier, avec un écart propre à chaque bâtiment — tiré de
+    // son identifiant, donc stable d'une visite à l'autre. Une rangée de maisons
+    // rigoureusement de même hauteur ne trompe personne, et l'écart reste assez
+    // faible pour ne rien affirmer que la donnée ne dise.
+    if (form === 'canopy') return Math.max(Math.min(storey * 1.6, 7), 3);
+    if (area < 40) return Math.max(storey * 0.9, 2.6);
+    const spread = 0.88 + hash01(b.id) * 0.3;
+    if (tall || area >= 600) return Math.max(townHeight * spread, storey * 2.2);
+    return Math.min(Math.max(townHeight * spread, storey), 200);
+  });
 }
 
 /**
@@ -403,6 +572,8 @@ const COLOR_TARGET = 0xef8b4e; // lieu cible : orange chaud (conserve)
 
 interface Theme {
   bg: number;
+  /** Haut du ciel : le bas du dégradé reprend `bg`. */
+  zenith: number;
   ground: number;
   path: number; // trottoirs (sidewalk)
   foot: number; // cheminements pietons (footway / pedestrian)
@@ -420,6 +591,7 @@ function themeColors(dark: boolean): Theme {
   return dark
     ? {
         bg: 0x0e1219,
+        zenith: 0x060910,
         ground: 0x1a1f29,
         path: 0x8b97b1,
         foot: 0x6f7890,
@@ -434,18 +606,46 @@ function themeColors(dark: boolean): Theme {
       }
     : {
         bg: 0xe8edf3,
+        zenith: 0xa8c6e6,
         ground: 0xb9b3a6,
-        path: 0xeef1f5,
+        path: 0xe6e4dc,
         foot: 0xd7cdba,
         road: 0x8b9098,
-        wall: 0xc6c8cc,
+        wall: 0xc3bfb7,
         sky: 0xeaf1fb,
         hemiGround: 0x9a948a,
-        hemiI: 1.15,
-        dirI: 2.4,
+        // Un peu moins d'ambiance et un peu plus de soleil : à parts égales, les
+        // façades s'éclairaient toutes pareil et le quartier s'aplatissait.
+        hemiI: 1.0,
+        dirI: 2.7,
         edge: 0x2b2f36,
         edgeOpacity: 0.18,
       };
+}
+
+/**
+ * Ciel : dégradé vertical du zénith vers l'horizon, posé en fond de scène.
+ * Deux pixels de large suffisent, la teinte ne variant qu'en hauteur.
+ */
+function skyTexture(horizon: number, zenith: number): THREE.Texture {
+  const cv = document.createElement('canvas');
+  cv.width = 2;
+  cv.height = 256;
+  const g = cv.getContext('2d');
+  if (g) {
+    const grad = g.createLinearGradient(0, 0, 0, cv.height);
+    grad.addColorStop(0, `#${zenith.toString(16).padStart(6, '0')}`);
+    // La bascule se fait un peu au-dessus du milieu : sous l'horizon, le
+    // dégradé n'est de toute façon jamais vu (la caméra reste au-dessus du sol).
+    grad.addColorStop(0.62, `#${horizon.toString(16).padStart(6, '0')}`);
+    grad.addColorStop(1, `#${horizon.toString(16).padStart(6, '0')}`);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, cv.width, cv.height);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 /** Construit un ruban plat (cheminement) le long d'une polyligne locale. */
@@ -488,8 +688,19 @@ function ribbon(points: [number, number][], width: number): THREE.BufferGeometry
 
 // --- Trajet en pointillés animés ------------------------------------------
 
-/** Couleur du trajet : un cyan vif, absent du reste de la scène. */
-const COLOR_ROUTE = 0x1fc3e0;
+/**
+ * Un trajet, une couleur de départ. Arriver en voiture ou descendre du bus ne
+ * pose pas les mêmes questions, et les deux tracés se croisent souvent : de la
+ * même couleur, on ne savait plus lequel on suivait.
+ *
+ * Le cyan reste à la place PMR, où il était déjà ; le rose part à l'arrêt de
+ * bus, franchement à l'écart du cyan comme de l'orange du lieu visé. Les rubans
+ * de lignes de bus peuvent tirer sur le rose, mais ne s'y confondent pas : ils
+ * sont continus, larges et au milieu de la chaussée, quand un trajet est fait de
+ * tirets étroits qui défilent.
+ */
+const COLOR_ROUTE_PMR = 0x1fc3e0;
+const COLOR_ROUTE_BUS = 0xf0509a;
 /** Longueur d'un motif tiret + espace (m). */
 const ROUTE_PERIOD = 2.6;
 /** Vitesse de défilement des tirets (m/s) : lisible sans être agité. */
@@ -520,6 +731,9 @@ function dashTexture(colour: number): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(cv);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
+  // Vue à hauteur d'yeux, le tracé est rasant : sans filtrage anisotrope les
+  // tirets s'étalaient en traînées floues devant le fauteuil.
+  tex.anisotropy = 8;
   return tex;
 }
 
@@ -612,7 +826,9 @@ function makeRoute(
   group.add(routeEnd(points[0][0], points[0][1], colour));
   group.add(routeEnd(points[points.length - 1][0], points[points.length - 1][1], colour));
 
-  groundMats.push({ mat: mesh.material as THREE.Material, dim: 0.45 });
+  // Les marquages du décor s'effacent pendant la simulation, mais pas le tracé
+  // suivi : c'est précisément ce qu'on est venu regarder au sol.
+  groundMats.push({ mat: mesh.material as THREE.Material, dim: 0.8 });
 
   return {
     group,
@@ -1028,6 +1244,162 @@ function makeBench(x: number, z: number, colour: string | null, withBackrest: bo
     g.add(back);
   }
   g.position.set(x, 0, z);
+  return g;
+}
+
+/**
+ * Registre des places déjà prises au sol.
+ *
+ * OpenStreetMap décrit chaque objet pour lui-même, sans se soucier de ses
+ * voisins : une corbeille cartographiée au pied d'un banc porte souvent les
+ * mêmes coordonnées à un mètre près, et la scène plantait la corbeille au milieu
+ * de l'assise. On réserve donc l'emprise de ce qui est posé, et le mobilier
+ * suivant s'écarte de ce qui l'occupe déjà — jusqu'à un point où renoncer vaut
+ * mieux que déplacer, faute de quoi on raconterait autre chose que le terrain.
+ */
+function groundClaims(): {
+  claim: (x: number, z: number, r: number) => void;
+  place: (x: number, z: number, r: number, maxShift: number) => [number, number] | null;
+} {
+  const taken: { x: number; z: number; r: number }[] = [];
+  const hit = (x: number, z: number, r: number): { x: number; z: number; r: number } | null =>
+    taken.find((t) => Math.hypot(t.x - x, t.z - z) < t.r + r) ?? null;
+
+  return {
+    claim(x, z, r) {
+      taken.push({ x, z, r });
+    },
+    place(x, z, r, maxShift) {
+      let cx = x;
+      let cz = z;
+      for (let i = 0; i < 8; i += 1) {
+        const blocker = hit(cx, cz, r);
+        if (!blocker) {
+          taken.push({ x: cx, z: cz, r });
+          return [cx, cz];
+        }
+        let dx = cx - blocker.x;
+        let dz = cz - blocker.z;
+        let d = Math.hypot(dx, dz);
+        if (d < 1e-3) {
+          // Coordonnées confondues : il faut bien choisir une direction. Une
+          // diagonale fixe suffit, et reste la même d'une visite à l'autre.
+          dx = 0.7071;
+          dz = 0.7071;
+          d = 1;
+        }
+        cx = blocker.x + (dx / d) * (blocker.r + r + 0.05);
+        cz = blocker.z + (dz / d) * (blocker.r + r + 0.05);
+        if (Math.hypot(cx - x, cz - z) > maxShift) return null;
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * Vert sombre des points d'accueil. Il fallait une teinte reconnaissable du
+ * ciel, où une plaque verticale ne se voit pas ; celle-ci ne se confond ni avec
+ * le bleu de l'accessibilité, ni avec l'orange du lieu visé, et son bleuté la
+ * distingue des feuillages, franchement jaunes-olive.
+ */
+const COLOR_HELP = 0x2f7d5f;
+
+/** Ce qu'on lit sur le panneau d'un lieu d'accueil, et ce qu'il rend comme service. */
+const POI_LABEL: Record<PoiKind, { word: string; help: string }> = {
+  cafe: { word: 'Café', help: 'Commerce ouvert au public : on peut y demander de l’aide' },
+  bar: { word: 'Bar', help: 'Commerce ouvert au public : on peut y demander de l’aide' },
+  restaurant: {
+    word: 'Restaurant',
+    help: 'Commerce ouvert au public : on peut y demander de l’aide',
+  },
+  pharmacy: { word: 'Pharmacie', help: 'Conseil et secours de proximité' },
+  hotel: { word: 'Hôtel', help: 'Accueil ouvert une bonne partie de la journée' },
+  community: { word: 'Centre social', help: 'Accueil du public' },
+  worship: { word: 'Lieu de culte', help: 'Ouvert au public selon les horaires' },
+};
+
+/**
+ * Panneau d'un lieu d'accueil : petit totem de trottoir, plaque claire et mot
+ * lisible des deux côtés.
+ *
+ * Volontairement sans couleur propre : l'orange reste au lieu visé, le bleu à
+ * l'accessibilité, et une teinte de plus ferait un sapin de Noël. La plaque
+ * émaillée suffit à se lire, et c'est aussi ce qu'on voit dans la rue.
+ */
+function makePoiSign(
+  x: number,
+  z: number,
+  angle: number,
+  kind: PoiKind,
+  /** Hauteur du mât : réduite pour la vignette de légende, où seul le mot compte. */
+  h = 2.05,
+  /** Platine sommitale : utile dans la scène, elle écrase la vignette de légende. */
+  cap = true
+): THREE.Group {
+  const g = new THREE.Group();
+  const post = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.055, 0.055, h, 8),
+    new THREE.MeshStandardMaterial({ color: 0x555c68, roughness: 0.5, metalness: 0.3 })
+  );
+  post.position.y = h / 2;
+  post.castShadow = true;
+  g.add(post);
+
+  const cv = document.createElement('canvas');
+  cv.width = 320;
+  cv.height = 128;
+  const ctx = cv.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#f4f2ec';
+    ctx.beginPath();
+    ctx.roundRect(3, 3, cv.width - 6, cv.height - 6, 18);
+    ctx.fill();
+    ctx.strokeStyle = cssColour(COLOR_HELP);
+    ctx.lineWidth = 9;
+    ctx.stroke();
+    ctx.fillStyle = '#252a31';
+    ctx.font = '600 54px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(POI_LABEL[kind].word, cv.width / 2, cv.height / 2 + 3);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const face = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6, toneMapped: false });
+  const edge = new THREE.MeshStandardMaterial({ color: 0xd8d5cd, roughness: 0.7 });
+  // Ordre des faces d'une boîte : +X, −X, +Y, −Y, +Z, −Z. Le mot va donc sur les
+  // deux grandes faces, quel que soit le côté d'où l'on vient.
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.46, 0.06), [
+    edge,
+    edge,
+    edge,
+    edge,
+    face,
+    face,
+  ]);
+  panel.position.y = h - 0.02;
+  panel.castShadow = true;
+  g.add(panel);
+
+  // Platine à plat au sommet du mât. Vue de la rue, c'est le chapeau du panneau ;
+  // vue du ciel — d'où l'on découvre la scène — c'est le seul élément du totem
+  // qui se voie, une plaque verticale s'y réduisant à un trait.
+  if (cap)
+    for (const [r, colour, y] of [
+      [0.42, COLOR_HELP, h + 0.23] as const,
+      [0.3, 0xf4f2ec, h + 0.26] as const,
+    ]) {
+      const disc = new THREE.Mesh(
+        new THREE.CylinderGeometry(r, r, 0.04, 20),
+        new THREE.MeshStandardMaterial({ color: colour, roughness: 0.6 })
+      );
+      disc.position.y = y;
+      g.add(disc);
+    }
+
+  g.position.set(x, 0, z);
+  g.rotation.y = angle;
   return g;
 }
 
@@ -1644,7 +2016,10 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   groundMats = [];
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(th.bg);
+  // Ciel dégradé plutôt qu'un aplat : la scène se regarde presque à l'horizontale,
+  // et un fond uni faisait un mur derrière les toits. Le bas du dégradé reprend
+  // la couleur du brouillard, si bien que les lointains s'y fondent.
+  scene.background = skyTexture(th.bg, th.zenith);
 
   // Objets interrogeables au survol : uniquement ceux qui portent une
   // information, jamais le decor (sol, trottoirs, chaussees).
@@ -1673,12 +2048,24 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   });
 
   // --- Batiments extrudes ---
-  // Tous les batiments partagent un materiau gris neutre ; seul le batiment
-  // cible (celui qui contient le point Access'libre) garde l'orange.
-  const wallMat = new THREE.MeshStandardMaterial({
-    color: th.wall,
-    roughness: 0.9,
-    metalness: 0.02,
+  // Le voisinage reste gris : seul le lieu visé porte une couleur. Mais un gris
+  // unique donnait un bloc de béton uniforme, alors qu'on cherche à distinguer
+  // les volumes les uns des autres. D'où quelques nuances proches, tirées au
+  // sort mais stables (l'identifiant OSM sert de graine) : la lecture des masses
+  // y gagne, la hiérarchie des couleurs n'en souffre pas.
+  const wallMats = [-0.06, -0.02, 0, 0.03, 0.07].map((d) => {
+    const c = new THREE.Color(th.wall);
+    const hsl = { h: 0, s: 0, l: 0 };
+    c.getHSL(hsl);
+    c.setHSL(hsl.h, hsl.s, Math.min(Math.max(hsl.l + d, 0.08), 0.95));
+    return new THREE.MeshStandardMaterial({ color: c, roughness: 0.9, metalness: 0.02 });
+  });
+  // Toitures : une teinte à part, plus sourde que les façades. Le bandeau qu'elles
+  // forment en débord souligne le haut des volumes, comme sur une maquette.
+  const roofMat = new THREE.MeshStandardMaterial({
+    color: dark ? 0x2a303b : 0x9a958c,
+    roughness: 0.95,
+    metalness: 0,
   });
   const targetMat = new THREE.MeshStandardMaterial({
     color: COLOR_TARGET,
@@ -1686,6 +2073,30 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     metalness: 0.02,
     emissive: COLOR_TARGET,
     emissiveIntensity: 0.12,
+  });
+  const targetRoofMat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(COLOR_TARGET).multiplyScalar(0.78),
+    roughness: 0.85,
+    metalness: 0.02,
+  });
+  // Poteaux des halles et préaux : métal clair, volontairement fin pour qu'on
+  // voie sous la couverture.
+  const postMat = new THREE.MeshStandardMaterial({
+    color: dark ? 0x6d7684 : 0x8d9098,
+    roughness: 0.5,
+    metalness: 0.35,
+  });
+  // Constructions légères : teinte plus claire et plus tiède que la maçonnerie,
+  // pour qu'un abri de cour ne se lise pas comme un bâtiment.
+  const lightMat = new THREE.MeshStandardMaterial({
+    color: dark ? 0x4a5160 : 0xd8d4c9,
+    roughness: 0.75,
+    metalness: 0.05,
+  });
+  const lightRoofMat = new THREE.MeshStandardMaterial({
+    color: dark ? 0x555d6c : 0xb9b3a4,
+    roughness: 0.6,
+    metalness: 0.15,
   });
   // Rayon de cadrage. Overpass renvoie les chemins entiers, pas seulement leur
   // portion dans le voisinage : une rue qui traverse le quartier peut filer sur
@@ -1702,10 +2113,13 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // Façades effectivement dessinees (empreintes retrecies), indexees comme les
   // batiments : servent a poser les portes au bon endroit sur le mur.
   const facades: ([number, number][] | null)[] = [];
-  for (let bi = 0; bi < payload.neighborhood.buildings.length; bi += 1) {
-    const b = payload.neighborhood.buildings[bi];
+  // Empreintes retenues, avec leur aire : la hauteur de chacune se déduit de
+  // l'ensemble, il faut donc les avoir toutes avant d'extruder la première.
+  const shapes: BuildingShape[] = [];
+  for (const b of payload.neighborhood.buildings) {
     if (!b.ring || b.ring.length < 3) {
       facades.push(null);
+      shapes.push({ b, ring: [], area: 0 });
       continue;
     }
     const ring: [number, number][] = b.ring.map((p) => toLocal(p[0], p[1]));
@@ -1713,39 +2127,122 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     // Empreinte legerement retrecie -> les routes/trottoirs restent visibles.
     const inner = insetRing(ring, 0.6);
     facades.push(inner);
+    shapes.push({ b, ring: inner, area: ringArea(inner) });
+  }
+  const heights = resolveHeights(shapes);
+
+  for (let bi = 0; bi < shapes.length; bi += 1) {
+    const { b, ring: inner, area } = shapes[bi];
+    if (!inner.length) continue;
     // Le rotateX(-PI/2) applique ensuite inverse le signe de z ; on pre-inverse z
     // (et on inverse l'ordre pour conserver l'orientation des faces) afin que le
     // batiment tombe au meme endroit que les routes/trottoirs (pas de miroir).
-    const src = inner.map(([x, z]) => [x, -z] as [number, number]).reverse();
-    const shape = new THREE.Shape();
-    src.forEach(([x, z], i) => (i === 0 ? shape.moveTo(x, z) : shape.lineTo(x, z)));
-    const height = buildingHeight(b);
-    const geom = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
-    geom.rotateX(-Math.PI / 2);
-
+    const flat = (r: [number, number][]): THREE.Shape => {
+      const src = r.map(([x, z]) => [x, -z] as [number, number]).reverse();
+      const shape = new THREE.Shape();
+      src.forEach(([x, z], i) => (i === 0 ? shape.moveTo(x, z) : shape.lineTo(x, z)));
+      return shape;
+    };
+    const height = heights[bi];
     const isTarget = bi === targetIdx;
     if (isTarget) hasTargetBuilding = true;
+    const form = buildingForm(b);
 
-    const mesh = new THREE.Mesh(geom, isTarget ? targetMat : wallMat);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    if (isTarget || b.name) {
-      addInfo(mesh, {
-        title: isTarget ? payload.place.nom : (b.name ?? 'Bâtiment'),
-        colour: isTarget ? COLOR_TARGET : undefined,
-        details: [
-          isTarget ? 'Lieu visé' : null,
-          isTarget && b.name && b.name !== payload.place.nom ? `OpenStreetMap : ${b.name}` : null,
-          b.levels ? `${b.levels} niveau${b.levels > 1 ? 'x' : ''}` : null,
-        ],
-      });
+    // Épaisseur de la couverture : marquée sur un bâtiment (corniche), fine sur
+    // une halle et sur une construction légère (tôle, polycarbonate).
+    const roofThick = form === 'solid' ? 0.34 : 0.22;
+    // Sous une halle, le vide est l'essentiel : la plaque monte au niveau donné
+    // par OSM (`min_height`) et, à défaut, juste sous le faîte.
+    const roofBase =
+      form === 'canopy'
+        ? Math.min(
+            Math.max(b.minHeight ?? height - roofThick, 2.2),
+            Math.max(height - roofThick, 2.2)
+          )
+        : height - roofThick / 2;
+
+    const parts: THREE.Object3D[] = [];
+    if (form === 'canopy') {
+      for (const [px, pz] of samplePerimeter(inner, 6)) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, roofBase, 8), postMat);
+        post.position.set(px, roofBase / 2, pz);
+        post.castShadow = true;
+        parts.push(post);
+      }
     } else {
-      scene.add(mesh);
+      const geom = new THREE.ExtrudeGeometry(flat(inner), {
+        depth: roofBase,
+        bevelEnabled: false,
+      });
+      geom.rotateX(-Math.PI / 2);
+      const mat = isTarget
+        ? targetMat
+        : form === 'light'
+          ? lightMat
+          : wallMats[Math.floor(hash01(b.id) * wallMats.length) % wallMats.length];
+      const walls = new THREE.Mesh(geom, mat);
+      walls.castShadow = true;
+      walls.receiveShadow = true;
+      parts.push(walls);
+      // Aretes discretes pour une definition "maquette".
+      scene.add(new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25), edgeMat));
     }
 
-    // Aretes discretes pour une definition "maquette".
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25), edgeMat);
-    scene.add(edges);
+    // Toiture : légère saillie sur les façades. Elle coiffe le volume et, sur une
+    // halle, c'est le seul élément construit.
+    const capGeom = new THREE.ExtrudeGeometry(
+      flat(insetRing(inner, form === 'canopy' ? -0.35 : -0.22)),
+      { depth: roofThick, bevelEnabled: false }
+    );
+    capGeom.rotateX(-Math.PI / 2);
+    capGeom.translate(0, roofBase, 0);
+    const cap = new THREE.Mesh(
+      capGeom,
+      isTarget ? targetRoofMat : form === 'light' ? lightRoofMat : roofMat
+    );
+    cap.castShadow = true;
+    cap.receiveShadow = true;
+    parts.push(cap);
+    scene.add(new THREE.LineSegments(new THREE.EdgesGeometry(capGeom, 25), edgeMat));
+
+    const levels = b.levels != null && b.levels > 0 ? b.levels : null;
+    const info: SceneInfo | null =
+      isTarget || b.name || form !== 'solid'
+        ? {
+            title: isTarget
+              ? payload.place.nom
+              : (b.name ??
+                (form === 'canopy'
+                  ? 'Halle, préau ou auvent'
+                  : form === 'light'
+                    ? 'Construction légère'
+                    : 'Bâtiment')),
+            colour: isTarget ? COLOR_TARGET : undefined,
+            details: [
+              isTarget ? 'Lieu visé' : null,
+              isTarget && b.name && b.name !== payload.place.nom
+                ? `OpenStreetMap : ${b.name}`
+                : null,
+              form === 'canopy' ? 'Couvert mais ouvert : on passe dessous' : null,
+              form === 'light' ? 'Abri, appentis ou véranda (OSM : wall=no)' : null,
+              levels ? `${levels} niveau${levels > 1 ? 'x' : ''}` : null,
+              b.height == null && levels == null && form === 'solid'
+                ? `Hauteur estimée d’après le voisinage (${Math.round(height)} m)`
+                : null,
+              area >= 1 ? `Emprise au sol : ${Math.round(area)} m²` : null,
+            ],
+          }
+        : null;
+
+    // Un groupe par bâtiment : le survol renvoie l'ensemble (murs et toiture),
+    // et une halle n'est de toute façon pas dissociable de ses poteaux.
+    if (info) {
+      const group = new THREE.Group();
+      for (const p of parts) group.add(p);
+      addInfo(group, info);
+    } else {
+      for (const p of parts) scene.add(p);
+    }
   }
 
   // --- Entrees OSM ---
@@ -1794,6 +2291,17 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     doors.push({ e, x: best.px, z: best.pz, angle: best.angle, outward, target: isTarget });
   }
 
+  // Entrées du lieu visé, par ordre de préférence : c'est la seule hiérarchie
+  // qui compte ici. Plusieurs portes, c'est le cas courant (une principale, une
+  // de service, parfois une accessible à l'écart), et la bonne dépend de qui
+  // arrive : on les garde donc toutes, classées, plutôt que d'en élire une.
+  const targetDoors = doors
+    .filter((d) => d.target)
+    .sort(
+      (a, b) => entranceScore(b.e) - entranceScore(a.e) || Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z)
+    );
+  const doorRank = new Map(targetDoors.map((d, i) => [d, i]));
+
   for (const d of doors) {
     // Le code couleur vaut partout : reperer une entree praticable chez le
     // voisin renseigne sur le quartier autant que sur le lieu lui-meme.
@@ -1809,15 +2317,33 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
           : d.e.wheelchair === 'no'
             ? 'Non accessible en fauteuil'
             : 'Accessibilité non renseignée';
+    // Quand le lieu a plusieurs portes, chacune se situe par rapport aux autres :
+    // « l'une des 3 entrées » évite de prendre une entrée de service pour la
+    // seule façon d'entrer.
+    const rank = doorRank.get(d);
+    const many = targetDoors.length > 1;
+    const title = !d.target
+      ? 'Entrée d’un bâtiment voisin'
+      : rank === 0
+        ? many
+          ? 'Entrée conseillée du lieu'
+          : d.e.kind === 'main'
+            ? 'Entrée principale du lieu'
+            : 'Entrée du lieu'
+        : 'Autre entrée du lieu';
     addInfo(door, {
-      title: d.target
-        ? d.e.kind === 'main'
-          ? 'Entrée principale du lieu'
-          : 'Entrée du lieu'
-        : 'Entrée d’un bâtiment voisin',
+      title,
       colour,
       details: [
         access,
+        d.target && many
+          ? `${rank === 0 ? 'Retenue' : `Entrée ${rank! + 1}`} sur ${targetDoors.length} entrées cartographiées`
+          : null,
+        d.target && d.e.kind === 'service'
+          ? 'Entrée de service'
+          : d.target && d.e.kind === 'main' && rank !== 0
+            ? 'Entrée principale'
+            : null,
         d.e.automatic ? 'Porte automatique' : null,
         d.e.stepCount ? `${d.e.stepCount} marche${d.e.stepCount > 1 ? 's' : ''} au seuil` : null,
         d.e.kerbHeight != null && d.e.kerbHeight > 0 ? `Ressaut de ${d.e.kerbHeight} m` : null,
@@ -1830,13 +2356,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // On le pose sur la meilleure entree cartographiee du batiment vise ; a
   // defaut, sur le point Access'libre (utile quand aucune entree n'est connue,
   // ou quand le point n'est dans aucune empreinte de batiment).
-  const bestDoor = doors
-    .filter((d) => d.target)
-    .sort(
-      (a, b) =>
-        entranceScore(b.e) - entranceScore(a.e) ||
-        Math.hypot(a.x, a.z) - Math.hypot(b.x, b.z)
-    )[0];
+  const bestDoor = targetDoors[0];
   addEntranceMarker(scene, hasTargetBuilding, bestDoor ? [bestDoor.x, bestDoor.z] : undefined);
 
   // --- Chaussees (routes) et cheminements pietons ---
@@ -1875,20 +2395,61 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // Réseau empruntable à pied, pour le calcul du trajet. Les escaliers y
   // figurent mais coûtent cher : le trajet les contourne s'il le peut.
   const walkNet: RouteLine[] = [];
+  // Surface piétonne d'une place ou d'un parvis : plus sourde que les trottoirs,
+  // dans l'esprit d'un pavage.
+  const plazaMat = new THREE.MeshStandardMaterial({
+    color: dark ? 0x424b5c : 0xdad2c2,
+    roughness: 1,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
   for (const path of payload.neighborhood.paths) {
     if (path.kind === 'park') continue;
     // Overpass rend les chemins entiers : une rue traversant le quartier
     // partait sinon jusqu'à l'horizon, en étoile autour de la scène. On ne
     // garde que les portions présentes dans le voisinage.
     const whole: [number, number][] = path.coords.map((p) => toLocal(p[0], p[1]));
+
+    // Place, parvis, esplanade : le tracé délimite une surface. En ruban, la
+    // place du Capitole se réduisait à un liseré blanc autour d'un vide — le
+    // contraire de ce qu'on cherche à voir, puisque c'est précisément là qu'on
+    // marche. Le tag `area=yes` tranche quand il est là ; sinon la convention du
+    // contour fermé, avec un seuil de surface pour ne pas remplir une boucle de
+    // trottoir autour d'un massif.
+    const closed =
+      whole.length >= 4 &&
+      Math.hypot(whole[0][0] - whole[whole.length - 1][0], whole[0][1] - whole[whole.length - 1][1]) <
+        0.5;
+    const plaza =
+      path.kind === 'footway' && closed && (path.area === true || ringArea(whole) >= 250);
+    if (plaza) {
+      const geom = flatPolygon(whole);
+      if (geom) {
+        const mesh = new THREE.Mesh(geom, plazaMat);
+        mesh.position.y = 0.05;
+        mesh.receiveShadow = true;
+        scene.add(mesh);
+      }
+    }
+
     for (const pts of clipToRadius(whole, FRAME_MAX)) {
       for (const [x, z] of pts) grow(x, z);
       if (pts.length >= 2) {
         if (path.kind === 'road') roadLines.push(pts);
         else if (path.kind === 'sidewalk' || path.kind === 'footway') footLines.push(pts);
+        // Un escalier n'est pas un chemin un peu plus long : en fauteuil, il
+        // n'en est pas un du tout. On ne l'interdit pas — s'il n'existe aucune
+        // autre liaison, le trajet doit le montrer plutôt que de disparaître —
+        // mais son coût le réserve au dernier recours. Une rampe praticable le
+        // ramène presque au niveau d'un cheminement ordinaire.
         if (path.kind !== 'road')
-          walkNet.push({ points: pts, cost: path.kind === 'steps' ? 6 : 1 });
+          walkNet.push({
+            points: pts,
+            cost: path.kind === 'steps' ? (path.rampWheelchair ? 2.5 : 40) : 1,
+          });
       }
+      // La surface est déjà posée : son contour n'a pas à être doublé d'un ruban.
+      if (plaza) continue;
 
     // Passage piéton : bandes blanches rayées posées sur la chaussée.
     if (path.kind === 'crossing') {
@@ -1953,6 +2514,42 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // --- Mobilier : bancs, arrets de bus, places PMR ---
   const nb = payload.neighborhood;
 
+  // --- Squares, pelouses, plans d'eau ---
+  // Ce ne sont pas des décorations : « après le square », « le long du bassin »
+  // sont les repères qu'on se donne pour retrouver une entrée, et un quartier
+  // vert rendu tout en bitume donnait une idée fausse des lieux. Posées au ras du
+  // sol, elles passent sous la voirie et sous les cheminements.
+  const AREA_STYLE: Record<AreaKind, { colour: number; dark: number; label: string }> = {
+    park: { colour: 0xa6c391, dark: 0x2c4030, label: 'Square ou jardin' },
+    grass: { colour: 0xb6cc9f, dark: 0x314434, label: 'Pelouse' },
+    wood: { colour: 0x88a878, dark: 0x24362a, label: 'Bois' },
+    water: { colour: 0x92bad2, dark: 0x1d3746, label: 'Plan d’eau' },
+    pitch: { colour: 0xb79a72, dark: 0x3b3428, label: 'Terrain de sport' },
+    playground: { colour: 0xcbb488, dark: 0x413827, label: 'Aire de jeux' },
+  };
+  const areaMats = new Map<AreaKind, THREE.Material>();
+  for (const area of nb.areas ?? []) {
+    const geom = flatPolygon(area.ring.map((p) => toLocal(p[0], p[1])));
+    if (!geom) continue;
+    const style = AREA_STYLE[area.kind];
+    let mat = areaMats.get(area.kind);
+    if (!mat) {
+      mat = new THREE.MeshStandardMaterial({
+        color: dark ? style.dark : style.colour,
+        roughness: area.kind === 'water' ? 0.25 : 1,
+        metalness: area.kind === 'water' ? 0.1 : 0,
+        side: THREE.DoubleSide,
+      });
+      areaMats.set(area.kind, mat);
+    }
+    const mesh = new THREE.Mesh(geom, mat);
+    // Juste au-dessus du fond de carte (−0,01), sous la chaussée (0,03).
+    mesh.position.y = 0.012;
+    mesh.receiveShadow = true;
+    if (area.name) addInfo(mesh, { title: area.name, details: [style.label] });
+    else scene.add(mesh);
+  }
+
   // --- Parkings surfaciques (amenity=parking) : empreinte au sol matérialisée ---
   const parkMat = new THREE.MeshStandardMaterial({
     color: 0x6b7382,
@@ -2001,9 +2598,14 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // voirie ; les bordures et barrieres, elles, peuvent border l'un ou l'autre.
   const benchGuides = footLines.length ? footLines : roadLines;
   const allGuides = [...footLines, ...roadLines];
+  // Emprises occupées au sol : les bancs s'installent les premiers, le petit
+  // mobilier s'écarte ensuite (voir `groundClaims`).
+  const claims = groundClaims();
   for (const bench of nb.benches ?? []) {
     const [x, z] = toLocal(bench.lng, bench.lat);
     grow(x, z);
+    // Un banc mesure 1,6 m : on réserve de quoi le contenir en entier.
+    claims.claim(x, z, 0.95);
     const seat = makeBench(x, z, bench.colour, bench.backrest !== false);
     seat.rotation.y = benchAngle(x, z, bench.direction, benchGuides);
     addInfo(seat, {
@@ -2012,6 +2614,51 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
         bench.backrest === true ? 'avec dossier' : bench.backrest === false ? 'sans dossier' : null,
         bench.material ? `Matériau : ${bench.material}` : null,
         'Point de repos sur le trajet',
+      ],
+    });
+  }
+
+  // --- Où demander de l'aide ---
+  // Un café, une pharmacie, un hôtel : ce sont les recours quand la porte
+  // annoncée accessible ne l'est pas, quand il faut téléphoner, s'asseoir ou
+  // attendre à l'abri. Ils figurent à ce titre, et pas comme annuaire de
+  // commerces — d'où le panneau sobre et le seul mot de leur nature.
+  for (const poi of nb.pois ?? []) {
+    let [x, z] = toLocal(poi.lng, poi.lat);
+    // Le point OSM tombe souvent au centre du bâtiment, où un panneau serait
+    // enfermé dans les murs : on le ramène au bord du cheminement le plus
+    // proche, à l'endroit où l'on passe et où l'on verrait une enseigne.
+    const guide = nearestLineDir(x, z, allGuides);
+    let facing = 0;
+    if (guide) {
+      const dx = guide.px - x;
+      const dz = guide.pz - z;
+      const d = Math.hypot(dx, dz);
+      facing = Math.atan2(dx, dz);
+      if (d > 2 && d <= 30) {
+        const k = (d - 1.3) / d;
+        x += dx * k;
+        z += dz * k;
+      }
+    }
+    // Deux commerces dans le même immeuble ont le même centre : les panneaux se
+    // rangent côte à côte au lieu de se superposer.
+    const spot = claims.place(x, z, 0.7, 3.5);
+    if (!spot) continue;
+    const label = POI_LABEL[poi.kind];
+    addInfo(makePoiSign(spot[0], spot[1], facing, poi.kind), {
+      title: poi.name ?? label.word,
+      colour: COLOR_HELP,
+      details: [
+        poi.name ? label.word : null,
+        label.help,
+        poi.wheelchair === 'yes'
+          ? 'Accessible en fauteuil (OpenStreetMap)'
+          : poi.wheelchair === 'limited'
+            ? 'Accès limité en fauteuil'
+            : poi.wheelchair === 'no'
+              ? 'Non accessible en fauteuil'
+              : null,
       ],
     });
   }
@@ -2097,11 +2744,16 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       color: col,
       roughness: 0.45,
       emissive: col,
-      emissiveIntensity: 0.16,
+      emissiveIntensity: 0.02,
       side: THREE.DoubleSide,
       // Vus de dessus les rubans se lisent bien ; a hauteur d'yeux ils
       // tapissent tout le sol, d'ou l'attenuation pendant la simulation.
       transparent: true,
+      // Les réseaux publient des rouges et des jaunes francs. À pleine
+      // saturation, deux lignes traversant la scène de bout en bout ramenaient
+      // tout le quartier à leur couleur ; laisser l'asphalte remonter un peu les
+      // remet à leur place, celle d'une indication.
+      opacity: 0.68,
     });
     // Liseré sombre : détache le ruban de l'asphalte et sépare deux lignes
     // voisines sans ajouter de couleur à la scène.
@@ -2110,6 +2762,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       roughness: 0.8,
       side: THREE.DoubleSide,
       transparent: true,
+      opacity: 0.8,
     });
     groundMats.push({ mat: band, dim: 0.2 }, { mat: casing, dim: 0.2 });
     return { col, band, casing };
@@ -2319,9 +2972,13 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
           details: ['Éclairage du cheminement'],
         });
         break;
-      case 'waste':
-        addInfo(makeWasteBin(x, z), { title: 'Corbeille de rue' });
+      case 'waste': {
+        // Une corbeille au pied d'un banc partage presque ses coordonnées : on
+        // la pose à côté, jamais dessus, et on renonce s'il n'y a pas la place.
+        const spot = claims.place(x, z, 0.3, 2.2);
+        if (spot) addInfo(makeWasteBin(spot[0], spot[1]), { title: 'Corbeille de rue' });
         break;
+      }
       case 'toilets': {
         grow(x, z);
         const ok = f.wheelchair === 'yes';
@@ -2410,15 +3067,26 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // visé, sinon la façade de ce bâtiment donnant sur le cheminement, sinon le
   // point Access'libre — qui tombe souvent au milieu du bâtiment.
   const targetRing = targetIdx >= 0 ? facades[targetIdx] : null;
-  const destination: [number, number] =
-    (bestDoor
-      ? ([
-          bestDoor.x + bestDoor.outward * Math.sin(bestDoor.angle) * 1.3,
-          bestDoor.z + bestDoor.outward * Math.cos(bestDoor.angle) * 1.3,
-        ] as [number, number])
-      : targetRing
-        ? frontDoorGuess(targetRing, walkNet, 1.3)
-        : null) ?? [0, 0];
+  /** Point d'attente devant une porte, à un pas de la façade. */
+  const approach = (d: (typeof doors)[number]): [number, number] => [
+    d.x + d.outward * Math.sin(d.angle) * 1.3,
+    d.z + d.outward * Math.cos(d.angle) * 1.3,
+  ];
+  // Portes visées par les trajets. Celles déclarées infranchissables en fauteuil
+  // sont écartées — sauf s'il n'en reste aucune, auquel cas mieux vaut montrer
+  // l'accès existant que rien du tout.
+  const usable = targetDoors.filter((d) => d.e.wheelchair !== 'no');
+  const candidates = (usable.length ? usable : targetDoors).slice(0, 4);
+  const fallback: [number, number] =
+    (targetRing ? frontDoorGuess(targetRing, walkNet, 1.3) : null) ?? [0, 0];
+  const destinations: [number, number][] = candidates.length
+    ? candidates.map(approach)
+    : [fallback];
+
+  // Réseau piéton préparé une fois : deux départs et quatre portes, c'est huit
+  // trajets à comparer, et reconstruire le graphe huit fois se voyait à
+  // l'ouverture de la scène.
+  const net = prepareNetwork(walkNet);
 
   const arrivals: {
     id: string;
@@ -2426,6 +3094,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
     title: string;
     origin: string;
     short: string;
+    colour: number;
   }[] = [];
   if (nearestPmr)
     arrivals.push({
@@ -2434,6 +3103,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       title: 'Trajet depuis la place PMR',
       origin: 'Départ : place de stationnement PMR la plus proche',
       short: 'Place PMR → entrée',
+      colour: COLOR_ROUTE_PMR,
     });
   if (nearestStop)
     arrivals.push({
@@ -2442,19 +3112,31 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
       title: 'Trajet depuis l’arrêt de bus',
       origin: `Départ : ${nearestStop.name ? `arrêt ${nearestStop.name}` : 'arrêt de bus le plus proche'}`,
       short: `${nearestStop.name ? `Arrêt ${nearestStop.name}` : 'Arrêt de bus'} → entrée`,
+      colour: COLOR_ROUTE_BUS,
     });
 
   walkable = [];
   for (const a of arrivals) {
-    const route = findRoute(walkNet, a.from, destination);
-    const drawn = makeRoute(route.points, COLOR_ROUTE);
+    const { result: route, index } = routeToAny(net, a.from, destinations);
+    const drawn = makeRoute(route.points, a.colour);
     if (!drawn) continue;
+    // La porte retenue n'est pas la même selon l'arrivée : depuis l'arrêt de
+    // bus, l'entrée latérale accessible est souvent plus courte que la façade
+    // principale. On dit donc laquelle mène où.
+    const door = candidates[index] ?? null;
+    const rank = door ? doorRank.get(door) : undefined;
     addInfo(drawn.group, {
       title: a.title,
-      colour: COLOR_ROUTE,
+      colour: a.colour,
       details: [
         a.origin,
-        bestDoor ? 'Arrivée : entrée cartographiée du lieu' : 'Arrivée : façade du lieu sur rue',
+        door
+          ? targetDoors.length > 1
+            ? `Arrivée : ${rank === 0 ? 'entrée conseillée' : `entrée ${rank! + 1}`} sur ${targetDoors.length}${
+                door.e.wheelchair === 'yes' ? ', accessible en fauteuil' : ''
+              }`
+            : 'Arrivée : entrée cartographiée du lieu'
+          : 'Arrivée : façade du lieu sur rue',
         `Environ ${Math.round(route.length)} m à pied`,
         route.direct
           ? 'Liaison directe : aucun cheminement cartographié sur ce parcours'
@@ -2471,6 +3153,7 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
           label: a.short,
           length: Math.round(route.length),
           direct: route.direct,
+          colour: a.colour,
         },
         path,
       });
@@ -2504,7 +3187,10 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   // --- Lumieres : ambiance hemispherique douce + soleil avec ombres portees ---
   scene.add(new THREE.HemisphereLight(th.sky, th.hemiGround, th.hemiI));
   const sun = new THREE.DirectionalLight(0xfff4e6, th.dirI);
-  sun.position.set(radius * 0.7, radius * 1.3, radius * 0.5);
+  // Soleil bas (environ 35°) : les ombres portées s'allongent et donnent leur
+  // relief aux volumes. Au zénith, tout était éclairé de la même façon et la
+  // scène perdait sa profondeur.
+  sun.position.set(radius * 0.95, radius * 0.78, radius * 0.55);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.bias = -0.0004;
@@ -2608,6 +3294,8 @@ export interface WalkOption {
   length: number;
   /** Vrai quand aucun cheminement n'est cartographié : liaison à vol d'oiseau. */
   direct: boolean;
+  /** Couleur du tracé dans la scène : l'interface s'y accorde. */
+  colour: number;
 }
 
 /** État transmis à l'interface à chaque trame de simulation. */
@@ -2707,7 +3395,7 @@ function advanceWalk(c: Ctx, w: WalkState, dt: number): void {
   // Le regard porte devant, très légèrement vers le sol : c'est là que se
   // trouve ce qu'on vient vérifier (ressauts, bordures, largeur de passage).
   c.camera.lookAt(p.x + p.hx * 12, EYE_HEIGHT - 1.1, p.z + p.hz * 12);
-  if (w.mini) paintWalkMini(w.mini, w.path, p);
+  if (w.mini) paintWalkMini(w.mini, w.path, p, w.option.colour);
   w.onFrame({
     progress: w.path.total ? w.d / w.path.total : 1,
     distance: w.d,
@@ -2723,7 +3411,12 @@ function advanceWalk(c: Ctx, w: WalkState, dt: number): void {
  * courante. Il répond à la seule question que la vue au ras du sol ne permet
  * plus de trancher — où en suis-je sur le parcours.
  */
-function paintWalkMini(cv: HTMLCanvasElement, path: WalkPath, pose: WalkPose): void {
+function paintWalkMini(
+  cv: HTMLCanvasElement,
+  path: WalkPath,
+  pose: WalkPose,
+  colour: number
+): void {
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
   const cw = Math.round(cv.clientWidth * ratio);
   const ch = Math.round(cv.clientHeight * ratio);
@@ -2789,7 +3482,7 @@ function paintWalkMini(cv: HTMLCanvasElement, path: WalkPath, pose: WalkPose): v
   g.beginPath();
   path.points.forEach(([px, pz], i) => (i ? g.lineTo(sx(px), sz(pz)) : g.moveTo(sx(px), sz(pz))));
   g.stroke();
-  g.strokeStyle = cssColour(COLOR_ROUTE);
+  g.strokeStyle = cssColour(colour);
   g.lineWidth = 2.5 * ratio;
   g.stroke();
 
@@ -2826,6 +3519,11 @@ function paintWalkMini(cv: HTMLCanvasElement, path: WalkPath, pose: WalkPose): v
 export type LegendKind =
   | 'target'
   | 'building'
+  | 'canopy'
+  | 'light-building'
+  | 'green'
+  | 'water-area'
+  | 'help'
   | 'entrance-yes'
   | 'entrance-no'
   | 'entrance-other'
@@ -2851,7 +3549,8 @@ export type LegendKind =
   | 'elevator'
   | 'barrier'
   | 'kerb-low'
-  | 'route';
+  | 'route-pmr'
+  | 'route-bus';
 
 /** Petit tronçon droit, pour illustrer un revêtement de cheminement. */
 function legendStrip(geom: THREE.BufferGeometry | null, colour: number, y = 0): THREE.Object3D {
@@ -2915,6 +3614,69 @@ function legendObject(kind: LegendKind): THREE.Object3D | null {
       mesh.position.y = 4.5;
       return mesh;
     }
+    case 'canopy': {
+      // Halle : la plaque et ses poteaux, sans mur — c'est ce qui la distingue
+      // d'un bâtiment, et ce que la vignette doit montrer.
+      const g = new THREE.Group();
+      const ring: [number, number][] = [
+        [-3, -2.4],
+        [3, -2.4],
+        [3, 2.4],
+        [-3, 2.4],
+      ];
+      const post = new THREE.MeshStandardMaterial({
+        color: 0x8d9098,
+        roughness: 0.5,
+        metalness: 0.35,
+      });
+      for (const [px, pz] of ring) {
+        const p = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 4.2, 8), post);
+        p.position.set(px, 2.1, pz);
+        g.add(p);
+      }
+      const cap = new THREE.Mesh(
+        new THREE.BoxGeometry(7, 0.24, 5.8),
+        new THREE.MeshStandardMaterial({ color: 0x9a958c, roughness: 0.95 })
+      );
+      cap.position.y = 4.32;
+      g.add(cap);
+      return g;
+    }
+    case 'light-building': {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(4, 2.5, 3.4),
+        new THREE.MeshStandardMaterial({ color: 0xd8d4c9, roughness: 0.75 })
+      );
+      body.position.y = 1.25;
+      g.add(body);
+      const roof = new THREE.Mesh(
+        new THREE.BoxGeometry(4.5, 0.22, 3.9),
+        new THREE.MeshStandardMaterial({ color: 0xb9b3a4, roughness: 0.6, metalness: 0.15 })
+      );
+      roof.position.y = 2.6;
+      g.add(roof);
+      return g;
+    }
+    case 'green':
+    case 'water-area': {
+      const water = kind === 'water-area';
+      const disc = new THREE.Mesh(
+        new THREE.CircleGeometry(3.2, 32),
+        new THREE.MeshStandardMaterial({
+          color: water ? 0x92bad2 : 0xa6c391,
+          roughness: water ? 0.25 : 1,
+          metalness: water ? 0.1 : 0,
+          side: THREE.DoubleSide,
+        })
+      );
+      disc.rotation.x = -Math.PI / 2;
+      return disc;
+    }
+    case 'help':
+      // Mât raccourci, plaque tournée vers l'objectif et platine ôtée : à 72
+      // pixels, vue de trois quarts haut, le chapeau masquait le mot.
+      return makePoiSign(0, 0, THREE.MathUtils.degToRad(38), 'cafe', 0.5, false);
     case 'entrance-yes':
       return makeDoorMarker(door('yes', true), entranceColour('yes'), true, 1);
     case 'entrance-no':
@@ -2933,7 +3695,7 @@ function legendObject(kind: LegendKind): THREE.Object3D | null {
       return g;
     }
     case 'sidewalk':
-      return legendStrip(ribbonSlab(line, 1.6, 0.12), 0xeef1f5);
+      return legendStrip(ribbonSlab(line, 1.6, 0.12), 0xe6e4dc);
     case 'footway':
       return legendStrip(ribbonSlab(line, 1.4, 0.07), 0xd7cdba);
     case 'road':
@@ -3020,7 +3782,8 @@ function legendObject(kind: LegendKind): THREE.Object3D | null {
       return makeBarrier(0, 0, 0, 'cycle_barrier');
     case 'kerb-low':
       return makeKerb(0, 0, 0, true);
-    case 'route': {
+    case 'route-pmr':
+    case 'route-bus': {
       // Vignette figée : la vignette est une image, le défilement se voit dans
       // la scène. On garde deux tirets pour que le motif se lise.
       const drawn = makeRoute(
@@ -3028,7 +3791,7 @@ function legendObject(kind: LegendKind): THREE.Object3D | null {
           [-2.6, 0],
           [2.6, 0],
         ],
-        COLOR_ROUTE
+        kind === 'route-pmr' ? COLOR_ROUTE_PMR : COLOR_ROUTE_BUS
       );
       return drawn ? drawn.group : null;
     }
@@ -3129,6 +3892,33 @@ export function updateTheme(dark: boolean): void {
   const th = themeColors(dark);
   ctx.scene.background = new THREE.Color(th.bg);
   if (ctx.scene.fog) (ctx.scene.fog as THREE.Fog).color = new THREE.Color(th.bg);
+}
+
+/**
+ * Sonde la scène le long d'un rayon partant de la caméra, en coordonnées écran
+ * normalisées. Réservée au banc d'essai : une capture montre qu'un objet est mal
+ * dessiné, pas lequel c'est. Absente du site, faute d'y être appelée.
+ */
+export function probeScene(nx = 0, ny = 0, max = 6): unknown[] {
+  const c = ctx;
+  if (!c) return [];
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(nx, ny), c.camera);
+  return ray
+    .intersectObjects(c.scene.children, true)
+    .slice(0, max)
+    .map((h) => {
+      const mat = (h.object as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      let info: string | null = null;
+      for (let o: THREE.Object3D | null = h.object; o && !info; o = o.parent)
+        info = (o.userData?.sceneInfo as SceneInfo | undefined)?.title ?? null;
+      return {
+        d: Math.round(h.distance * 10) / 10,
+        y: Math.round(h.point.y * 100) / 100,
+        couleur: mat?.color ? `#${mat.color.getHexString()}` : null,
+        info,
+      };
+    });
 }
 
 /** Detruit la scene et libere les ressources GPU. */

@@ -163,6 +163,7 @@ function walkHtml(): string {
       <div class="sim-controls">
         <label class="sim-pick">
           <span class="sr-only">Trajet à parcourir</span>
+          <span id="sim-swatch" class="sim-swatch" aria-hidden="true"></span>
           <select id="sim-route"></select>
         </label>
         <button id="sim-play" type="button" class="sim-btn">Parcourir le trajet</button>
@@ -230,6 +231,16 @@ function setupWalkUI(mod: SceneMod): void {
     )
     .join('');
   box.hidden = false;
+
+  // Chaque départ a sa couleur au sol ; la pastille dit lequel des deux tracés
+  // on s'apprête à suivre, sans avoir à relire la légende.
+  const swatch = document.getElementById('sim-swatch');
+  const paintSwatch = (): void => {
+    const chosen = options.find((o) => o.id === pick.value) ?? options[0];
+    if (swatch) swatch.style.background = `#${chosen.colour.toString(16).padStart(6, '0')}`;
+  };
+  paintSwatch();
+  pick.addEventListener('change', paintSwatch);
 
   /** Pas des commandes de recul et d'avance, en mètres. */
   const STEP_M = 10;
@@ -355,13 +366,22 @@ function legendHtml(payload: ScenePayload): string {
   const path = (k: string): boolean => nb.paths.some((p) => p.kind === k);
   const furn = (k: string): boolean => (nb.furniture ?? []).some((f) => f.kind === k);
 
+  const areas = nb.areas ?? [];
+  const buildings = nb.buildings ?? [];
+
   const groups: { title: string; entries: [LegendKind, string][] }[] = [
     {
       title: 'Se repérer',
       entries: [
         ['target', 'Lieu visé'],
         ['building', 'Autres bâtiments'],
-      ],
+        buildings.some((b) => b.kind === 'roof' || b.kind === 'carport' || b.kind === 'canopy') &&
+          (['canopy', 'Halle, préau, auvent'] as const),
+        buildings.some((b) => b.wall === false) &&
+          (['light-building', 'Abri, appentis, véranda'] as const),
+        areas.some((a) => a.kind !== 'water') && (['green', 'Square, pelouse'] as const),
+        areas.some((a) => a.kind === 'water') && (['water-area', 'Plan d’eau'] as const),
+      ].filter(Boolean) as [LegendKind, string][],
     },
     {
       title: 'Entrer',
@@ -393,8 +413,9 @@ function legendHtml(payload: ScenePayload): string {
     {
       title: 'Sur place',
       entries: [
-        (nb.busStops?.length || nb.parking?.some((p) => p.pmr)) &&
-          (['route', 'Trajet à pied vers l’entrée'] as const),
+        nb.parking?.some((p) => p.pmr) && (['route-pmr', 'Trajet depuis la place PMR'] as const),
+        nb.busStops?.length && (['route-bus', 'Trajet depuis l’arrêt de bus'] as const),
+        nb.pois?.length && (['help', 'Où demander de l’aide'] as const),
         nb.busStops?.length && (['bus_stop', 'Arrêt de bus'] as const),
         nb.busRoutes?.length && (['bus_route', 'Ligne de bus'] as const),
         nb.parking?.some((p) => p.pmr) && (['parking-pmr', 'Place PMR'] as const),

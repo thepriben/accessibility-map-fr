@@ -143,8 +143,10 @@ export async function basemapGround(
       map: tex,
       transparent: true,
       // La carte reste un arrière-plan : elle meuble les vides entre les objets
-      // 3D sans prétendre au même niveau de lecture qu'eux.
-      opacity: 0.88,
+      // 3D sans prétendre au même niveau de lecture qu'eux. Trop présente, ses
+      // gris très clairs délavaient toute la scène ; à cette opacité, le sol uni
+      // les réchauffe et les volumes se détachent.
+      opacity: 0.72,
       // Le sol uni reste dessous : la carte s'y fond au lieu de le remplacer.
       depthWrite: false,
       // Une carte n'est pas une matière : la laisser hors du rendu tonal

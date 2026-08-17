@@ -2,7 +2,20 @@
 // monte la scene 3D dans un canvas plein ecran, pour inspecter le rendu sans
 // passer par la carte. Coordonnees surchargeables : ?lat=..&lng=..&nom=..
 import { fetchNeighborhood } from '../data/overpass';
-import { renderLegendIcons, startScene3D, type LegendKind } from './scene3d';
+import {
+  probeScene,
+  renderLegendIcons,
+  seekWalk,
+  setWalkPlaying,
+  startScene3D,
+  startWalk,
+  walkOptions,
+  type LegendKind,
+} from './scene3d';
+
+// Sonde accessible depuis la capture (`--eval`), pour identifier un objet vu a
+// l'ecran sans deviner d'apres sa couleur.
+(window as unknown as { probe: typeof probeScene }).probe = probeScene;
 
 const q = new URLSearchParams(location.search);
 const lat = parseFloat(q.get('lat') ?? '46.12640');
@@ -15,11 +28,12 @@ const canvas = document.getElementById('c') as HTMLCanvasElement;
 // coup d'oeil que chaque objet se rend et se cadre correctement.
 if (q.get('icons') === '1') {
   const kinds: LegendKind[] = [
-    'target', 'building', 'entrance-yes', 'entrance-no', 'entrance-other',
+    'target', 'building', 'canopy', 'light-building', 'green', 'water-area',
+    'entrance-yes', 'entrance-no', 'entrance-other',
     'sidewalk', 'footway', 'crossing', 'road', 'steps', 'steps-ramp', 'kerb-low',
     'bench', 'bus_stop', 'bus_route', 'parking-pmr', 'parking', 'tree',
     'fire_hydrant', 'street_cabinet', 'water', 'bollard', 'lamp', 'waste',
-    'toilets', 'elevator', 'barrier', 'route',
+    'toilets', 'elevator', 'barrier', 'help', 'route-pmr', 'route-bus',
   ];
   const icons = renderLegendIcons(kinds);
   canvas.remove();
@@ -45,17 +59,42 @@ if (q.get('icons') === '1') {
   fetchNeighborhood(lng, lat, 100)
     .then((neighborhood) => {
       startScene3D(canvas, { place: { nom, lng, lat }, neighborhood });
+
+      // ?walk=<rang>&at=<metres> : place la vue a hauteur de fauteuil sur le
+      // trajet demande, a l'arret. C'est le seul moyen de verifier en capture ce
+      // qu'on ne voit pas d'en haut : ciel, seuils, couleur du trace au sol.
+      const walk = q.get('walk');
+      if (walk != null) {
+        const opts = walkOptions();
+        const chosen = opts[Number(walk) || 0];
+        console.log('trajets ' + JSON.stringify(opts));
+        if (chosen && startWalk(chosen.id, null, () => {})) {
+          setWalkPlaying(false);
+          seekWalk(Number(q.get('at') ?? '0'));
+        }
+      }
+
       // Repere pour la capture automatisee.
       document.title = 'scene-prete';
-      console.log('scene prete', {
-        batiments: neighborhood.buildings.length,
-        chemins: neighborhood.paths.length,
-        places: neighborhood.parking.length,
-        arrets: neighborhood.busStops.length,
-        lignes: neighborhood.busRoutes.length,
-        mobilier: neighborhood.furniture.length,
-        bordures: neighborhood.kerbs.length,
-      });
+      // Compte-rendu en texte : la capture d'écran ne sait afficher qu'une
+      // valeur, un objet s'y réduirait à « Object ».
+      console.log(
+        'scene prete ' +
+          JSON.stringify({
+            batiments: neighborhood.buildings.length,
+            halles: neighborhood.buildings.filter((b) => b.kind === 'roof').length,
+            legers: neighborhood.buildings.filter((b) => b.wall === false).length,
+            chemins: neighborhood.paths.length,
+            surfaces: neighborhood.areas.length,
+            accueils: neighborhood.pois.length,
+            places: neighborhood.parking.length,
+            arrets: neighborhood.busStops.length,
+            lignes: neighborhood.busRoutes.length,
+            mobilier: neighborhood.furniture.length,
+            bordures: neighborhood.kerbs.length,
+            entrees: neighborhood.entrances.length,
+          })
+      );
     })
     .catch((e) => {
       document.title = 'scene-erreur';
