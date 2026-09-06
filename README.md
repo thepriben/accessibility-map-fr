@@ -8,7 +8,8 @@ voisinage immédiat en 3D pour anticiper l'accès avant de s'y rendre.
 
 > Travail en cours, mené en collaboration avec [@JLZIMMERMANN](https://github.com/JLZIMMERMANN).
 
-![Vue 3D du voisinage d'un lieu (Grand Marché de Vichy) : bâtiment cible en orange, trottoirs, passages piétons, arrêts de bus, places PMR et bancs, avec la fiche d'accessibilité.](docs/apercu-3d-vichy.png)
+<img width="1908" height="951" alt="Grand Marché de Vichy" src="https://github.com/user-attachments/assets/23960d47-5cd7-4a43-bf5e-0ae78e1b4242" />
+
 
 ## Fonctionnalités
 
