@@ -88,6 +88,11 @@ export interface OsmBuilding {
   wall: boolean | null;
   /** `min_height` / `building:min_level` : hauteur du dessous d'une couverture. */
   minHeight: number | null;
+  /**
+   * Tag `man_made` quand il coexiste avec `building` (château d'eau, silo…).
+   * Sert à ne pas laisser un landmark dicter la hauteur du quartier en 3D.
+   */
+  manMade: string | null;
 }
 
 export type FurnitureKind =
@@ -260,9 +265,15 @@ export interface OsmBusStop {
   lat: number;
   name: string | null;
   line: string | null;
-  /** Abri voyageurs (`shelter`). */
+  /**
+   * Abri voyageurs : tag `shelter` sur l'arrêt, ou `amenity=shelter` à part à
+   * proximité (souvent `shelter_type=public_transport`).
+   */
   shelter: boolean | null;
-  /** Banc à l'arrêt (`bench`). */
+  /**
+   * Banc à l'arrêt : tag `bench` sur l'arrêt, ou `amenity=bench` cartographié
+   * à part juste à côté.
+   */
   bench: boolean | null;
   /** Bande d'éveil de vigilance sur le quai. */
   tactile: boolean | null;
@@ -433,6 +444,46 @@ function distM(lng1: number, lat1: number, lng2: number, lat2: number): number {
 }
 
 /**
+ * Distance max (m) pour rattacher un `amenity=shelter` ou un `amenity=bench` à
+ * un arrêt. Au-delà, ce n'est plus le confort du quai mais un autre objet.
+ */
+const STOP_AMENITY_M = 12;
+
+/**
+ * Enrichit les arrêts avec les abris et bancs cartographiés à part, et retire
+ * des bancs libres ceux qui ont été absorbés — sinon le même siège apparaît
+ * deux fois (dans le modèle d'arrêt et comme banc isolé).
+ */
+function attachBusStopAmenities(
+  stops: OsmBusStop[],
+  benches: OsmBench[],
+  shelters: { lng: number; lat: number }[]
+): OsmBench[] {
+  if (!stops.length) return benches;
+  const absorbed = new Set<number>();
+
+  for (const stop of stops) {
+    for (const sh of shelters) {
+      if (distM(stop.lng, stop.lat, sh.lng, sh.lat) <= STOP_AMENITY_M) {
+        stop.shelter = true;
+        break;
+      }
+    }
+    for (let i = 0; i < benches.length; i += 1) {
+      if (absorbed.has(i)) continue;
+      const bench = benches[i];
+      if (distM(stop.lng, stop.lat, bench.lng, bench.lat) <= STOP_AMENITY_M) {
+        stop.bench = true;
+        absorbed.add(i);
+      }
+    }
+  }
+
+  if (!absorbed.size) return benches;
+  return benches.filter((_, i) => !absorbed.has(i));
+}
+
+/**
  * Réutilise un voisinage déjà en cache si son centre est assez proche : le point
  * demandé reste alors bien à l'intérieur de l'emprise déjà téléchargée. Utile
  * quand on sort d'un lieu 3D pour en explorer un autre juste à côté.
@@ -512,6 +563,8 @@ async function fetchNeighborhoodRaw(
       way["highway"="steps"](${b});
       way["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|road)$"](${b});
       node["amenity"="bench"](${b});
+      node["amenity"="shelter"](${b});
+      way["amenity"="shelter"](${b});
       node["highway"="bus_stop"](${b});
       node["public_transport"="platform"](${b});
       node["amenity"="parking_space"](${b});
@@ -575,6 +628,9 @@ async function fetchNeighborhoodRaw(
     busRoutes: [],
     entrances: [],
   };
+  // Abris voyageurs cartographiés à part (`amenity=shelter`) : on les rattache
+  // ensuite aux arrêts voisins plutôt que de les dessiner comme du mobilier.
+  const shelters: { lng: number; lat: number }[] = [];
 
   // Le `foreach` des lignes de bus émet ses éléments après le bloc principal :
   // tout ce qui suit la première relation `route=` relève de cette section.
@@ -600,6 +656,7 @@ async function fetchNeighborhoodRaw(
         // absence, d'où le null plutôt qu'un true par défaut.
         wall: tags.wall === 'no' ? false : tags.wall === 'yes' ? true : null,
         minHeight: toNum(tags.min_height) ?? (minLevel != null ? minLevel * 3 : null),
+        manMade: tags.man_made || null,
       });
     }
 
@@ -740,6 +797,11 @@ async function fetchNeighborhoodRaw(
         });
       }
 
+      // Abri voyageurs (node) : rattache plus bas a l'arret voisin.
+      if (tags.amenity === 'shelter') {
+        shelters.push({ lng: el.lon, lat: el.lat });
+      }
+
       // Mobilier / obstacles / services (nodes).
       const kind = furnitureKind(tags);
       if (kind) {
@@ -760,7 +822,9 @@ async function fetchNeighborhoodRaw(
 
     // Équipements cartographiés en surface : on les ramène à leur centre.
     if (el.type === 'way' && pos) {
-      if (tags.amenity === 'fountain') {
+      if (tags.amenity === 'shelter') {
+        shelters.push({ lng: pos[0], lat: pos[1] });
+      } else if (tags.amenity === 'fountain') {
         out.furniture.push({ id: eid, kind: 'fountain', lng: pos[0], lat: pos[1] });
       } else if (tags.amenity === 'toilets') {
         out.furniture.push({
@@ -838,6 +902,10 @@ async function fetchNeighborhoodRaw(
     out.busRoutes = out.busRoutes.filter((r) => r.segments.length > 0);
   }
 
+  // Abri / banc indiqués à part d'un arrêt : on les rattache au quai, et le
+  // banc ainsi absorbé ne se redessine pas une seconde fois à côté.
+  out.benches = attachBusStopAmenities(out.busStops, out.benches, shelters);
+
   return out;
 }
 
@@ -882,8 +950,9 @@ const BARRIER_KINDS = new Set([
 ]);
 
 function furnitureKind(tags: Record<string, string>): FurnitureKind | null {
-  if (tags.amenity === 'bench') return 'bench';
-  if (tags.highway === 'bus_stop' || tags.public_transport === 'platform') return 'bus_stop';
+  // Bancs et arrêts ont leurs listes dédiées (`benches`, `busStops`) : on ne les
+  // empile pas aussi dans `furniture`, où ils ne seraient de toute façon pas
+  // dessinés.
   if (tags.amenity === 'fountain') return 'fountain';
   if (tags.natural === 'tree') return 'tree';
   if (tags.highway === 'crossing') return 'crossing';

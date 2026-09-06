@@ -316,6 +316,30 @@ interface BuildingShape {
 }
 
 /**
+ * Landmark vertical (château d'eau, silo…) : sa hauteur est réelle, mais elle
+ * ne doit pas servir de référence au reste du quartier — sinon Mondeville se
+ * peuplait de tours de 30–60 m autour d'un `man_made=water_tower`.
+ */
+function isHeightLandmark(s: BuildingShape): boolean {
+  const m = s.b.manMade;
+  if (
+    m === 'water_tower' ||
+    m === 'tower' ||
+    m === 'chimney' ||
+    m === 'communications_tower' ||
+    m === 'mast' ||
+    m === 'storage_tank' ||
+    m === 'silo' ||
+    m === 'lighthouse'
+  )
+    return true;
+  // Même sans `man_made` : une emprise étroite à 25 m et plus n'est pas un
+  // immeuble de ville dont on pourrait recopier la hauteur.
+  if (s.b.height != null && s.b.height >= 25 && s.area > 0 && s.area < 250) return true;
+  return false;
+}
+
+/**
  * Hauteurs des bâtiments du voisinage.
  *
  * `height` est rare dans OSM, `building:levels` un peu moins ; le reste doit
@@ -344,8 +368,9 @@ function resolveHeights(shapes: BuildingShape[]): number[] {
   const storey = ratios.length ? Math.min(Math.max(median(ratios), 2.7), 5) : 3.1;
 
   // Hauteurs sûres du quartier : servent de référence aux bâtiments muets.
+  // Les landmarks verticaux sont exclus : voir `isHeightLandmark`.
   const known = shapes
-    .filter((s) => s.b.height != null || s.b.levels != null)
+    .filter((s) => !isHeightLandmark(s) && (s.b.height != null || s.b.levels != null))
     .map((s) => s.b.height ?? s.b.levels! * storey)
     .filter((h) => h >= 2 && h <= 200);
   const townHeight = known.length ? median(known) : 9;
@@ -480,7 +505,8 @@ function ringCentroidDist(ring: [number, number][]): number {
  *  3. meilleur recoupement de mots significatifs (>= 2 mots communs, ou un nom
  *     entièrement inclus dans l'autre), le plus proche du centre en cas d'ex æquo ;
  *  4. repli géométrique : bâtiment dont l'empreinte contient le point.
- * Retourne l'index dans le tableau, ou -1.
+ * Les deux replis géométriques ignorent les structures ouvertes (`wall=no`),
+ * voir `openStructure`. Retourne l'index dans le tableau, ou -1.
  */
 function pickTargetBuilding(
   buildings: OsmBuilding[],
@@ -492,6 +518,18 @@ function pickTargetBuilding(
 
   const localRing = (b: OsmBuilding): [number, number][] | null =>
     b.ring && b.ring.length >= 3 ? b.ring.map((p) => toLocal(p[0], p[1])) : null;
+
+  /**
+   * Structure ouverte (`wall=no` : auvent, préau, halle, hangar). Elle couvre
+   * volontiers le point sans être le lieu — le pas de porte est derrière elle —
+   * et l'import du cadastre en sème beaucoup en France. Les repli géométriques
+   * ci-dessous la sautent donc : deviner sur la seule empreinte désignait
+   * l'auvent, et c'est lui qui passait en orange à la place du bâtiment.
+   *
+   * Les étapes qui s'appuient sur le nom la gardent : un marché couvert est
+   * bien une halle, et c'est son nom qui le dit.
+   */
+  const openStructure = (b: OsmBuilding): boolean => b.wall === false;
 
   // 1. Nom exact.
   if (target.length >= 3) {
@@ -537,6 +575,7 @@ function pickTargetBuilding(
 
   // 4. Repli géométrique.
   for (let i = 0; i < buildings.length; i += 1) {
+    if (openStructure(buildings[i])) continue;
     const ring = localRing(buildings[i]);
     if (ring && ringContains(ring, 0, 0)) return i;
   }
@@ -548,6 +587,7 @@ function pickTargetBuilding(
   let near = -1;
   let nearD = 12;
   for (let i = 0; i < buildings.length; i += 1) {
+    if (openStructure(buildings[i])) continue;
     const ring = localRing(buildings[i]);
     if (!ring) continue;
     let d = Infinity;
@@ -2664,6 +2704,9 @@ export function startScene3D(canvas: HTMLCanvasElement, payload: Scene3DPayload)
   }
 
   // --- Arrêts de bus : quai orienté sur la voie, abri/banc si connus ---
+  // `shelter` / `bench` viennent du tag sur l'arrêt ou d'un objet OSM voisin
+  // (`amenity=shelter`, `amenity=bench`) déjà rattaché en amont : le banc
+  // absorbé n'est plus dans `nb.benches`, donc pas de double dessin.
   // Retenus au passage pour le trajet : on garde le plus proche du lieu visé.
   let nearestStop: {
     x: number;
