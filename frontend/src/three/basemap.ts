@@ -11,7 +11,7 @@
  * `projector` dans scene3d).
  */
 import * as THREE from 'three';
-import { BASEMAP_TILES_LIGHT } from '../config';
+import { BASEMAP_MAX_ZOOM, basemapLabelTiles, basemapTiles } from '../config';
 
 const TILE = 256;
 const M_PER_DEG_LAT = 111320;
@@ -34,8 +34,12 @@ function tileToLat(y: number, z: number): number {
   return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
 }
 
-function tileUrl(x: number, y: number, z: number): string {
-  const tpl = BASEMAP_TILES_LIGHT[(x + y) % BASEMAP_TILES_LIGHT.length];
+/** Le sol reste clair quel que soit le theme : la scène 3D l'est aussi. */
+const GROUND_TILES = basemapTiles('light');
+const GROUND_LABEL_TILES = basemapLabelTiles('light');
+
+function tileUrl(tpls: string[], x: number, y: number, z: number): string {
+  const tpl = tpls[(x + y) % tpls.length];
   return tpl.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y));
 }
 
@@ -70,7 +74,7 @@ export async function basemapGround(
 
   // Le niveau de zoom descend jusqu'à tenir dans le budget de tuiles. La zone
   // nette est de toute façon évidée : la périphérie tolère une image grossière.
-  let z = 18;
+  let z = BASEMAP_MAX_ZOOM;
   let x0 = 0;
   let x1 = 0;
   let y0 = 0;
@@ -96,9 +100,17 @@ export async function basemapGround(
   for (let x = x0; x <= x1; x += 1) {
     for (let y = y0; y <= y1; y += 1) {
       jobs.push(
-        loadTile(tileUrl(x, y, z)).then((img) => {
-          if (!img) return;
-          g.drawImage(img, (x - x0) * TILE, (y - y0) * TILE, TILE, TILE);
+        Promise.all([
+          loadTile(tileUrl(GROUND_TILES, x, y, z)),
+          loadTile(tileUrl(GROUND_LABEL_TILES, x, y, z)),
+        ]).then(([base, labels]) => {
+          if (!base) return;
+          const dx = (x - x0) * TILE;
+          const dy = (y - y0) * TILE;
+          g.drawImage(base, dx, dy, TILE, TILE);
+          // Les noms de rues situent la scène dans son quartier : sans eux, le
+          // fond n'est plus qu'un gris texturé.
+          if (labels) g.drawImage(labels, dx, dy, TILE, TILE);
           drawn += 1;
         })
       );

@@ -1,7 +1,7 @@
 import maplibregl, { Map as MlMap, GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { Protocol } from 'pmtiles';
-import { INITIAL_VIEW, asset, basemapTiles } from '../config';
+import { INITIAL_VIEW, asset, basemapLabelTiles, basemapTiles } from '../config';
 import { getTheme } from '../theme';
 import { state } from '../state';
 import type { DataConfig, Place, PlaceProperties } from '../types';
@@ -302,6 +302,8 @@ export function updateMapTheme(theme: string): void {
   if (!map) return;
   const src = map.getSource('basemap') as maplibregl.RasterTileSource | undefined;
   src?.setTiles?.(basemapTiles(theme));
+  const labels = map.getSource('basemap-labels') as maplibregl.RasterTileSource | undefined;
+  labels?.setTiles?.(basemapLabelTiles(theme));
   if (map.getLayer('bg')) {
     map.setPaintProperty('bg', 'background-color', theme === 'dark' ? '#0c0f14' : '#eae7df');
   }

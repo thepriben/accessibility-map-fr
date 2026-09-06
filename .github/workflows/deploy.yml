@@ -45,7 +45,7 @@ jobs:
             "mode": "points",
             "source": "https://thepriben.github.io/accessibility-map-data/acceslibre-points.json",
             "label": "Acceslibre (France)",
-            "attribution": "&copy; <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\" rel=\"noopener\">OpenStreetMap</a> &middot; <a href=\"https://carto.com/attributions\" target=\"_blank\" rel=\"noopener\">CARTO</a> &middot; données <a href=\"https://acceslibre.beta.gouv.fr/\" target=\"_blank\" rel=\"noopener\">Acceslibre</a>"
+            "attribution": "Fond <a href=\"https://www.esri.com/\" target=\"_blank\" rel=\"noopener\">Esri</a>, HERE, Garmin &middot; <a href=\"https://geoservices.ign.fr/\" target=\"_blank\" rel=\"noopener\">IGN</a>/Géoplateforme &middot; &copy; <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\" rel=\"noopener\">OpenStreetMap</a> &middot; données <a href=\"https://acceslibre.beta.gouv.fr/\" target=\"_blank\" rel=\"noopener\">Acceslibre</a>"
           }
           EOF
 

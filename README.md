@@ -16,7 +16,7 @@ voisinage immédiat en 3D pour anticiper l'accès avant de s'y rendre.
 - **Carte 2D** (MapLibre GL) : regroupement (clustering) des établissements
   Acceslibre sur toute la France, calculé dans un *Web Worker* (Supercluster)
   pour garder l'interface fluide même avec plusieurs centaines de milliers de
-  points. Fond de carte CARTO sobre, attribution personnalisée, voile atténuant
+  points. Fond de carte Esri Gray Canvas sobre, attribution personnalisée, voile atténuant
   ce qui n'est pas la France (métropole + territoires d'outre-mer).
 - **Recherche unique** : un seul champ pour chercher par nom de lieu, ville ou
   code postal (accents et casse indifférents). La sélection recentre la carte
@@ -100,4 +100,7 @@ Le dossier `pipeline/` reste utile en local (échantillon, appels à l'API).
 - Établissements : Acceslibre (Licence Ouverte / Etalab 2.0).
 - Bâtiments, cheminements et mobilier du voisinage : OpenStreetMap (ODbL), via
   l'API Overpass.
-- Fonds de carte : CARTO (données OpenStreetMap).
+- Fonds de carte, tous sans clef d'API : Esri Gray Canvas (Esri, HERE, Garmin,
+  données OpenStreetMap), dont le cache s'arrête au niveau de zoom 16 ; au-delà,
+  le Plan IGN de la Géoplateforme prend le relais, désaturé pour rester dans le
+  même gris.
